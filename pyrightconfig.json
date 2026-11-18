@@ -1,0 +1,10 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.11",
+  "pythonPlatform": "All",
+  "include": ["main.py", "config.py", "src", "tests"],
+  "exclude": [".venv", "**/__pycache__"],
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": false
+}

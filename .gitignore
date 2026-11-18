@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Model packs: large (about 330 MB each) and downloaded again on demand by
+# install.py. See the README section "The model".
+models/
+*.onnx
+*.zip.part
+
+# Face database: biometric data. Never commit this.
+database/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Local settings, attendance exports, and benchmark output
+settings.json
+attendance/
+benchmarks/
+*.csv
+
+# Logs and caches
+*.log
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+
+# Local code index
+.codebase-memory/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+

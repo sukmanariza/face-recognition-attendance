@@ -1,0 +1,29 @@
+# Runtime dependencies, pinned so the environment is reproducible.
+# Verified on Windows 11 with Python 3.14.2, CPU only, and on Linux (aarch64/x86_64).
+
+insightface==2.1
+onnxruntime==1.31.1
+opencv-python==5.1.0.95
+numpy==2.5.5
+PyYAML==6.0.3
+PySide6-Essentials==6.12.0
+cryptography==50.0.2
+
+# Notes
+# -----
+# * insightface 2.1 ships as a pure-Python wheel (py3-none-any), so no C++ build
+#   tools are needed. insightface 0.7.x does need them; do not downgrade.
+# * onnxruntime has wheels for CPython 3.10-3.14. For an NVIDIA GPU, install
+#   onnxruntime-gpu that matches your CUDA version and add the CUDA provider to
+#   model.providers in config.yaml.
+# * opencv-python (not opencv-contrib-python): only the core and HighGUI modules
+#   are used, and the contrib build is roughly twice the download size.
+# * PySide6-Essentials contains QtCore/QtGui/QtWidgets, which is all the interface
+#   needs. The wheel uses the stable ABI (cp310-abi3) so it runs on Python 3.10+.
+# * cryptography provides AES-GCM for the encrypted database and the scrypt key
+#   derivation. It has wheels for Windows, x86_64 Linux and Raspberry Pi OS on
+#   aarch64. On 32-bit armv7 there is no wheel, and building it needs a Rust
+#   toolchain, so there prefer the distribution package (python3-cryptography).
+# * Pillow is not listed: it arrives through scikit-image (an insightface
+#   dependency) and the app never imports it directly.
+

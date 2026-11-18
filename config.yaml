@@ -1,0 +1,157 @@
+# Face ID - baseline configuration.
+#
+# Precedence (highest first):
+#   1. settings.json        what you changed in the Settings screen
+#   2. performance tier     chosen automatically from your hardware, see [performance]
+#   3. this file            the shipped defaults
+#
+# Unknown keys are rejected: a typo fails at startup instead of being silently
+# ignored. Delete settings.json to return to these values.
+
+camera:
+  index: 0
+  width: 640
+  height: 480
+  requested_fps: 30
+  # auto | dshow | msmf (Windows) | v4l2 (Linux) | any
+  backend: auto
+  warmup_frames: 3
+  read_timeout_seconds: 3.0
+  max_consecutive_failures: 30
+
+model:
+  # buffalo_s = det_500m (SCRFD) + w600k_mbf (ArcFace, 512-d), ~330 MB, tuned for CPU
+  # buffalo_l = det_10g + w600k_r50, more accurate, roughly 10x slower on a laptop core
+  name: buffalo_s
+  # Model packs are downloaded here on first run (models/<name>/).
+  root: models
+  providers:
+    - CPUExecutionProvider
+  # Detection input size. 320 is the sweet spot for a 4-core CPU; 480 helps small
+  # or distant faces at a large frame-time cost.
+  det_size: [320, 320]
+  det_thresh: 0.5
+  warmup: true
+  # all | extended | basic | disabled
+  graph_optimization: all
+  # 0 means "let ONNX Runtime decide". Keep intra_op at or below the physical core
+  # count; oversubscribing makes frames slower, not faster.
+  intra_op_threads: 2
+  inter_op_threads: 1
+
+recognition:
+  # Minimum cosine similarity for a match. 0.45 suits buffalo_s.
+  # Similarity is NOT a probability; the UI shows it as a percentage for
+  # readability, but the number is a distance in embedding space.
+  similarity_threshold: 0.45
+  # Reject a match when the runner-up is within this margin of the winner.
+  # 0.0 disables the check. Useful when many people look alike.
+  ambiguity_margin: 0.0
+  # Detect on every Nth frame and reuse the boxes in between.
+  detection_interval: 2
+  # Re-embed each tracked face at most this often (seconds).
+  embedding_interval_seconds: 0.5
+  # Consecutive agreeing results before a name is shown.
+  confirmation_hits: 3
+  # Similarity smoothing for display only, never for the match decision.
+  smoothing_alpha: 0.65
+  track_max_age_seconds: 1.5
+  max_faces: 5
+  iou_threshold: 0.3
+
+registration:
+  # Five staged poses: frontal, turn left, turn right, tilt, closer.
+  samples: 5
+  capture_interval_seconds: 0.4
+  # Minimum similarity between a new sample and the samples already collected.
+  min_sample_consistency: 0.50
+  # Refuse to register a face that already belongs to another identity.
+  duplicate_similarity_threshold: 0.60
+  # Frontal stage: |yaw ratio| must stay below this.
+  frontal_yaw_tolerance: 0.10
+  # Turn stages: |yaw ratio| must be at least this, in the correct direction.
+  turned_yaw: 0.18
+  # Tilt stage: |roll| must land inside this band.
+  tilt_roll_min_deg: 8.0
+  tilt_roll_max_deg: 20.0
+  # No stage accepts a head roll beyond this, so the roll pretzels are rejected.
+  stage_max_roll_deg: 14.0
+  # Closer stage: face must be this much larger than the first accepted sample.
+  closer_scale_ratio: 1.20
+
+quality:
+  # Reject frames that cannot produce a reliable embedding.
+  min_face_size_px: 120
+  min_det_score: 0.65
+  # Laplacian variance; raise it for a sharp camera, lower it in dim rooms.
+  blur_threshold: 60.0
+  brightness_min: 60.0
+  brightness_max: 200.0
+  contrast_min: 20.0
+  max_yaw_ratio: 0.45
+  max_roll_deg: 25.0
+
+database:
+  path: database/face_database.db
+  busy_timeout_ms: 5000
+  # Full names and embeddings are encrypted with AES-GCM before they are stored.
+  encrypt: true
+  # The key lives beside the database, owner-only. Back it up: without it the
+  # registered faces cannot be read again. Set FACEID_PASSPHRASE (or pass
+  # --passphrase) to also protect the key file with a passphrase.
+  key_file: database/face_key.bin
+
+attendance:
+  # A confirmed match marks the person present, once per calendar day.
+  enabled: true
+  # Local time, 24 hour clock.
+  work_start: "08:00"
+  # First sighting later than start + grace is recorded as "late".
+  late_after_minutes: 15
+  # Repeated sightings update the row at most this often (seconds).
+  refresh_seconds: 60
+  # Do not clock in a face that the presentation check flagged as a photo.
+  require_live_face: true
+  # Where exported CSV files are written.
+  export_directory: attendance
+
+ui:
+  window_title: Face ID
+  # Frames larger than this are scaled down before display.
+  display_max_width: 720
+  show_fps: true
+  show_similarity: true
+  # dark | light
+  style: dark
+  animations: true
+
+liveness:
+  # Presentation check: real 3D face versus a photo or a screen.
+  #   off      measure nothing
+  #   advisory show the verdict, still report the match
+  #   enforce  do not accept a detected photo or screen as an identity
+  # A photo or screen is always refused during enrollment, in every mode but off.
+  mode: advisory
+  # Frames of movement needed before a verdict is offered.
+  min_observations: 8
+  # 0.0 is conservative (fewer false alarms), 1.0 flags earlier.
+  sensitivity: 0.5
+
+logging:
+  # debug | info | warning | error
+  level: info
+
+benchmark:
+  duration_seconds: 60.0
+  warmup_seconds: 5.0
+  sample_interval_seconds: 1.0
+  target_display_fps: 25.0
+  output_directory: benchmarks
+
+performance:
+  # auto | low | balanced | high
+  # auto picks from CPU cores and RAM:
+  #   low      <= 2 cores or <= 2 GB RAM   single-board computers, old laptops
+  #   balanced <= 4 cores or <= 6 GB RAM   typical laptop
+  #   high     everything else
+  profile: auto
