@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 
 from .crypto import CryptoError, FieldCipher
-from .permissions import restrict_to_owner
+from .permissions import prepare_private_file, restrict_to_owner
 from .similarity import IdentityRecord
 
 logger = logging.getLogger(__name__)
@@ -121,6 +121,20 @@ def _utc_now() -> str:
 def _restrict_permissions(path: Path, mode: int) -> None:
     """Restrict a file or directory to its owner: POSIX modes, Windows ACL."""
     restrict_to_owner(path, directory=mode != 0o600)
+
+
+def _restrict_database_files(path: Path) -> None:
+    """Owner-only for the database and the two files SQLite writes beside it.
+
+    WAL and SHM hold copies of the same pages, so leaving them with the default ACL
+    exposes every row the database was restricted to protect. They are created lazily,
+    so this is called again after the first write.
+    """
+    _restrict_permissions(path, 0o600)
+    for suffix in ("-wal", "-shm"):
+        sidecar = path.with_name(path.name + suffix)
+        if sidecar.exists():
+            _restrict_permissions(sidecar, 0o600)
 
 
 def validate_employee_id(employee_id: str) -> str:
@@ -280,7 +294,7 @@ class FaceDatabase:
         try:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA journal_mode = WAL")
-            _restrict_permissions(self._path, 0o600)
+            _restrict_database_files(self._path)
         except sqlite3.Error:
             connection.close()
             raise
@@ -374,6 +388,8 @@ class FaceDatabase:
             self._migrate_employee_ids()
         except sqlite3.Error as exc:
             raise DatabaseError(f"Could not prepare the database schema: {exc}") from exc
+        # The first write is what makes SQLite create the WAL and SHM files.
+        _restrict_database_files(self._path)
 
     def _meta(self, key: str) -> str | None:
         row = self._connection.execute(
@@ -1014,7 +1030,9 @@ class FaceDatabase:
     def backup_to(self, destination: str | Path) -> Path:
         """Write a consistent copy of the database (WAL included) to ``destination``."""
         target = Path(destination)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        # A backup is a full copy of the biometric rows, so it is created owner-only
+        # instead of being opened with the default permissions and fixed afterwards.
+        prepare_private_file(target)
         # `with sqlite3.connect(...)` commits but does not close, which would leave
         # the copy locked on Windows, so the handle is closed explicitly.
         copy = None
@@ -1027,4 +1045,5 @@ class FaceDatabase:
         finally:
             if copy is not None:
                 copy.close()
+        _restrict_database_files(target)
         return target

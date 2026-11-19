@@ -6,10 +6,15 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from datetime import date
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
+from config import load_config
+from src import attendance as attendance_module
+from src import database as database_module
 from src.crypto import FieldCipher
 from src.database import (
     DatabaseError,
@@ -436,6 +441,63 @@ class ActivationTests(DatabaseTestCase):
         self.database.add_employee("001", "Ana", [sample(1)])
         record = self.database.set_employee_active("001", False)
         self.assertIn("inactive", record.summary)
+
+
+class DerivedFilePermissionTests(unittest.TestCase):
+    """Every file that ends up holding biometric rows must be owner-only.
+
+    The database file was restricted but the files SQLite creates beside it were not,
+    so the WAL and SHM were readable by other accounts on the machine. A backup and a
+    CSV export are full copies of the same data and had the same gap.
+    """
+
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.path = Path(self._directory.name) / "faces.db"
+
+    def test_the_database_and_its_sidecar_files_are_restricted(self) -> None:
+        with mock.patch.object(database_module, "restrict_to_owner") as restrict:
+            database = FaceDatabase(self.path, busy_timeout_ms=500)
+            self.addCleanup(database.close)
+            database.add_employee("001", "Ana", [sample(1)])
+
+        restricted = {Path(call.args[0]).name for call in restrict.call_args_list}
+        self.assertIn("faces.db", restricted)
+        self.assertIn("faces.db-wal", restricted)
+        self.assertIn("faces.db-shm", restricted)
+
+    def test_a_backup_is_created_owner_only_before_it_is_written(self) -> None:
+        database = FaceDatabase(self.path, busy_timeout_ms=500)
+        self.addCleanup(database.close)
+        database.add_employee("001", "Ana", [sample(1)])
+        target = Path(self._directory.name) / "backups" / "copy.db"
+
+        with mock.patch.object(
+            database_module, "prepare_private_file", wraps=database_module.prepare_private_file
+        ) as prepare:
+            database.backup_to(target)
+
+        prepare.assert_called_once_with(target)
+        self.assertTrue(target.is_file())
+
+    def test_the_csv_export_is_created_owner_only(self) -> None:
+        from src.attendance import AttendanceService
+
+        database = FaceDatabase(self.path, busy_timeout_ms=500)
+        self.addCleanup(database.close)
+        database.add_employee("001", "Ana", [sample(1)])
+        database.mark_present("001", "2026-11-19", "08:00")
+        service = AttendanceService(database, load_config().attendance)
+        target = Path(self._directory.name) / "attendance" / "2026-11.csv"
+
+        with mock.patch.object(
+            attendance_module, "prepare_private_file", wraps=attendance_module.prepare_private_file
+        ) as prepare:
+            service.export_csv(target, date(2026, 11, 19), date(2026, 11, 19))
+
+        prepare.assert_called_once_with(target)
+        self.assertIn("Ana", target.read_text(encoding="utf-8-sig"))
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ board such as a Raspberry Pi.
 ## What it can do
 
 - **Recognise people you enrolled.** Every face in the picture gets a box with its name
-  and similarity above it, so a second person in shot is visible instead of confusing.
+  and a confidence above it, so a second person in shot is visible instead of confusing.
   A name only appears after several frames agree.
 - **Tell a real face from a photo or a screen.** The program measures small differences
   in how a face moves. A flat photo behaves differently from a real head.

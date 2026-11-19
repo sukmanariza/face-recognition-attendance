@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from src.database import DatabaseError
-from src.similarity import to_percentage
 
 from . import widgets
 from .context import AppContext
@@ -191,7 +190,7 @@ class HomePage(QWidget):
             self._context.application.describe_compute()
         )
         self._environment_labels["Recognition threshold"].setText(
-            f"{to_percentage(config.recognition.similarity_threshold)}% similarity"
+            f"{config.recognition.similarity_threshold:.2f} cosine similarity"
         )
         self._environment_labels["Database"].setText(str(config.database_path))
         self._environment_labels["Storage"].setText(

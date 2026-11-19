@@ -178,12 +178,12 @@ class PageTests(unittest.TestCase):
         labels = [text.strip().lower() for text in self._texts(page)]
         self.assertNotIn("model", labels)
 
-    def test_recognition_page_shows_a_percentage_threshold(self) -> None:
+    def test_recognition_page_shows_the_cosine_threshold(self) -> None:
         self.window.navigate("recognition")
         self.app.processEvents()
         page = self.window.recognition_page
         text = " ".join(self._texts(page))
-        self.assertIn("45%", text)
+        self.assertIn("0.45 cosine", text)
 
     def test_the_idle_readout_is_not_repainted_on_every_frame(self) -> None:
         """The page sees 10 to 30 results per second; identical text must be free."""
@@ -610,7 +610,9 @@ class FaceOverlayTests(unittest.TestCase):
         self.assertEqual(len(overlays), 1)
         self.assertIn("Ana", overlays[0].label)
         self.assertIn("001", overlays[0].label)
-        self.assertIn("73%", overlays[0].label)
+        # The box carries the calibrated confidence, not the raw cosine score.
+        self.assertIn("%", overlays[0].label)
+        self.assertNotIn("73%", overlays[0].label)
         self.assertEqual(overlays[0].bbox, (10.0, 20.0, 110.0, 140.0))
 
     def test_every_face_in_the_frame_gets_its_own_box(self) -> None:

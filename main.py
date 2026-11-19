@@ -401,6 +401,43 @@ def command_providers(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_calibrate(args: argparse.Namespace) -> int:
+    from src.calibration import fit
+    from src.calibration_audit import measure
+
+    application = _load_application(args)
+    try:
+        measurement = measure(application.create_gallery())
+        if measurement is None:
+            print(
+                "Need at least two identities, each with two samples, to compare "
+                "same-person and different-person scores."
+            )
+            return 1
+        print(measurement.describe())
+        calibration = fit(measurement.genuine, measurement.impostor)
+        print(calibration.describe())
+        threshold = application.config.recognition.similarity_threshold
+        print(measurement.threshold_advice(threshold))
+        if args.save:
+            overrides = {
+                "recognition": {
+                    "confidence_impostor_ceiling": calibration.impostor_ceiling,
+                    "confidence_genuine_floor": calibration.genuine_floor,
+                }
+            }
+            application.save_settings(overrides)
+            print("Saved the measured anchors to settings.json.")
+        else:
+            print("Re-run with --save to use these anchors in the app.")
+    except Exception as exc:  # noqa: BLE001 - CLI must print, never traceback-dump
+        LOGGER.error("Calibration failed: %s", exc)
+        return 1
+    finally:
+        application.close()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="face-id",
@@ -477,6 +514,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="override model.det_size for the comparison (e.g. 480)",
     )
 
+    calibrate = subparsers.add_parser(
+        "calibrate", help="measure the confidence scale on this database"
+    )
+    calibrate.add_argument(
+        "--save",
+        action="store_true",
+        help="store the measured anchors in settings.json",
+    )
+
     return parser
 
 
@@ -495,6 +541,7 @@ _HANDLERS = {
     "register": command_register,
     "benchmark": command_benchmark,
     "providers": command_providers,
+    "calibrate": command_calibrate,
 }
 
 

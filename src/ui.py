@@ -18,7 +18,6 @@ from config import UiConfig
 
 from .face_recognizer import FaceState, FrameRecognition
 from .face_registration import SampleAttempt, SampleStatus
-from .similarity import to_percentage
 
 _FONT = cv2.FONT_HERSHEY_DUPLEX
 _FONT_PLAIN = cv2.FONT_HERSHEY_SIMPLEX
@@ -251,7 +250,7 @@ def render_recognition(
         draw_face(image, face.bbox, palette, label=label, level=level)
 
     lines = [
-        f"{recognition.face_count} face(s)  |  threshold {to_percentage(recognition.threshold)}%",
+        f"{recognition.face_count} face(s)  |  threshold {recognition.threshold:.2f} cosine",
     ]
     if ui_config.show_fps:
         lines.append(f"{recognition.fps:.1f} FPS  |  {recognition.inference_ms:.0f} ms")

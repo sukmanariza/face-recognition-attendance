@@ -252,8 +252,7 @@ class RecognitionPage(QWidget):
         threshold = config.recognition.similarity_threshold
         hits = config.recognition.confirmation_hits
         text = (
-            f"Threshold {round(threshold * 100)}% similarity, confirmed over {hits} "
-            "consecutive checks."
+            f"Threshold {threshold:.2f} cosine, confirmed over {hits} consecutive checks."
         )
         if config.recognition.ambiguity_margin > 0:
             text += (
@@ -349,10 +348,10 @@ class RecognitionPage(QWidget):
         overlays: list[widgets.FaceOverlay] = []
         for face in recognition.faces:
             if face.accepted:
-                label = f"{face.display_name}  {face.display_id}  {face.percentage}%"
+                label = f"{face.display_name}  {face.display_id}  {face.confidence_text}"
                 colour = palette.success
             elif face.state is FaceState.VERIFYING:
-                label = f"Verifying  {face.percentage}%"
+                label = f"Verifying  {face.confidence_text}"
                 colour = palette.warning
             else:
                 label = "Unknown"
@@ -401,9 +400,12 @@ class RecognitionPage(QWidget):
         percentage = face.percentage
         self._similarity.setValue(percentage)
         if self._context.config.ui.show_similarity:
-            self._set_similarity_text(f"Similarity {percentage}%  ({face.similarity:.3f})")
+            self._set_similarity_text(
+                f"Confidence {face.confidence_text}  (cosine {face.similarity_smoothed:.3f}, "
+                f"{percentage}%)"
+            )
         else:
-            self._set_similarity_text("Similarity hidden in Settings")
+            self._set_similarity_text("Confidence hidden in Settings")
         self._show_presentation(face.presentation, multiple=recognition.face_count > 1)
         self._show_attendance(face.attendance)
         self._reason.setText(face.reason)

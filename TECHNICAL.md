@@ -96,12 +96,52 @@ there is no long-term person tracking.
 
 Until the confirmation count is reached the face is labelled *Verifying*, not named.
 
-### 2.2 The percentage is not a probability
+### 2.2 Reading the score: cosine, and confidence
 
-Similarity is a cosine distance in [-1, 1]; the interface multiplies it by 100 for
-readability and clamps at 0. A 62% match does not mean "62% likely to be the same
-person". It means the two embeddings are 0.62 similar. Calibrate the threshold on your
-own camera and lighting; the 0.45 default is a starting point for `buffalo_s`.
+Two different numbers, on two different scales, and confusing them is why a correct
+match used to read "65%" and look like a coin toss.
+
+**Cosine** is the raw measurement: the similarity of two 512-dimension embeddings, in
+[-1, 1]. It is what the threshold is compared against, so `recognition.similarity_threshold`
+is quoted in this scale (`0.45` default) and the Settings slider shows it as `0.45`.
+
+**Confidence** is what the interface shows next to a name. It is the cosine score placed
+on a scale anchored on the two measured populations:
+
+| Anchor | Meaning |
+| --- | --- |
+| `recognition.confidence_impostor_ceiling` (0.20) | The highest score seen between two *different* people |
+| `recognition.confidence_genuine_floor` (0.48) | The lowest score seen between two samples of the *same* person |
+
+Those two anchors are placed at 5% and 95% and joined by a logistic curve, so a score in
+the gap between the populations reads high, a score near an impostor reads low, and the
+display never claims 0% or 100%. It is shown with one decimal because whole numbers would
+read "99" for every solid match, and a number that never moves is indistinguishable from
+one that is not measured.
+
+Measured on the shipped `buffalo_s` pack, three identities with five samples each:
+
+| Population | Pairs | Min | Median | Max |
+| --- | --- | --- | --- | --- |
+| Same person | 30 | 0.477 | 0.653 | 0.852 |
+| Different people | 75 | -0.134 | 0.035 | 0.197 |
+
+So a genuine match at the 0.653 median reads about **99.9%**, and the same score used to
+read 65%. Nothing about the decision changed: the match is still accepted or rejected on
+the raw cosine against the threshold.
+
+`python main.py calibrate` measures both populations on your own database and reports
+whether the configured threshold sits in the gap between them. `--save` stores the
+measured anchors in `settings.json`. Run it once everyone is registered; with two
+identities it still works, but more people make the impostor side of the scale better
+founded.
+
+**The gap matters more than the number.** The threshold belongs between the two
+populations. In the measurement above the impostor side stops at 0.197 and the genuine
+side starts at 0.477, so any threshold in that band accepts every same-person pair and
+still rejects every different-person pair. A threshold of 0.60 sits *inside* the
+same-person population and rejects about a quarter of genuine pairs, which shows up as a
+name flickering between "matched" and "no match" instead of a low score.
 
 ---
 
@@ -224,6 +264,25 @@ rotate_key(Path('database/face_key.bin'), 'new', 'old')"
 An existing plain-text database is encrypted on the first start with encryption on, and
 the file is compacted afterwards (`VACUUM`) so the old readable pages do not remain in
 the file or in the write-ahead log.
+
+#### Every file that holds the rows is owner-only
+
+Restricting the database file alone was not enough: SQLite writes two files beside it,
+and the app writes three more copies of the same data.
+
+| File | Holds | Protection |
+| --- | --- | --- |
+| `face_database.db` | Everything | mode `0600`, Windows ACL for the current account |
+| `face_database.db-wal` | Committed pages not yet checkpointed, so every row | Same, applied on open and again after the first write |
+| `face_database.db-shm` | The shared-memory index over the WAL | Same |
+| `database/backups/*.db` | A full copy of the database | Created owner-only before the copy starts |
+| `attendance/*.csv` | Full names in plain text, by design | Created owner-only before the rows are written |
+| `database/face_key.bin` | The key itself | Same, written through a private temp file |
+
+The WAL and the backup used to inherit `Authenticated Users: Modify` from their folder,
+which exposed the same rows the database file was being protected from. The CSV export
+is not encrypted, so its permissions are the only thing between a full name and another
+account on the machine.
 
 ### 4.4 Attendance rules
 
@@ -398,7 +457,6 @@ python main.py providers                      # compare every backend on this ma
 python main.py providers --det-size 480       # the same at a larger detector input
 python main.py providers --provider DmlExecutionProvider --frames 30
 ```
-
 The Overview page shows the backend in use (`DirectML (GPU)`, `CPU`, ...), and
 `python main.py status` prints it next to the hardware line.
 
@@ -455,6 +513,8 @@ The Settings page exposes these; the same keys work in `settings.json`.
 | Key | Default | Why you would change it |
 | --- | --- | --- |
 | `recognition.similarity_threshold` | 0.45 | Raise if look-alikes match, lower if you are rejected |
+| `recognition.confidence_impostor_ceiling` | 0.20 | Cosine at which the confidence scale reads 5%; `calibrate` measures it |
+| `recognition.confidence_genuine_floor` | 0.48 | Cosine at which the confidence scale reads 95% |
 | `recognition.ambiguity_margin` | 0.0 | Reject close calls between two similar people |
 | `recognition.confirmation_hits` | 3 | How many agreeing frames before a name appears |
 | `recognition.max_faces` | 5 | Faces processed per frame |
@@ -541,6 +601,8 @@ src/
   face_registration.py  staged session and persistence with duplicate guards
   face_recognizer.py    tracking, throttling, confirmation, matching, attendance hook
   similarity.py         cosine maths, gallery index, match decision
+  calibration.py        cosine score to a readable confidence, anchored on measurements
+  calibration_audit.py  same-person and different-person scores from this database
   presentation.py       real 3D face versus a photo or a screen (parallax test)
   liveness.py           the detector contract and the presentation verdict
   crypto.py             AES-GCM field encryption and key handling
@@ -587,7 +649,7 @@ ignored by git.
 ### 11.1 Checks
 
 ```bash
-python -m unittest discover                                  # 437 tests, no camera or model needed
+python -m unittest discover                                  # 456 tests, no camera or model needed
 uv tool run ruff check . --exclude .venv                     # lint
 uv tool run pyright                                          # types
 uv tool run vulture main.py config.py src tests              # dead code
@@ -617,13 +679,17 @@ Qt platform and assert behaviour rather than pixels.
 
 ## 12. Threat model summary
 
-What the encryption protects: someone who copies the SQLite file, or a backup of it,
-cannot read names or embeddings without the key. Other accounts on the same machine
-cannot read the key either, because it is owner-only on both platforms (section 4.3).
+What the encryption protects: someone who copies the SQLite file, its write-ahead log,
+or a backup of it, cannot read names or embeddings without the key. Other accounts on
+the same machine cannot read the key either, because every file the database touches is
+owner-only on both platforms (section 4.3).
 
 What it does not protect: an attacker who is already running code as your user on the
 machine, because the app needs the key open to work. SQLite itself is not encrypted, so
-the structure (how many identities exist, when they were added) stays visible.
+the structure (how many identities exist, when they were added) stays visible, and the
+audit log records employee IDs and dates in the clear. An exported CSV is plain text with
+every full name in it; its file permissions are the only protection, so move it off the
+machine deliberately rather than keeping it in a shared folder.
 
 There is no telemetry, no upload, and no network access after the model is on disk. You
 can verify that by running the app with networking disabled.

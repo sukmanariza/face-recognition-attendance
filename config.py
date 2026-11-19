@@ -18,6 +18,7 @@ from typing import Any
 import yaml
 
 from src import execution_providers
+from src.calibration import SeparationCalibration
 
 DEFAULT_CONFIG_FILENAME = "config.yaml"
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / DEFAULT_CONFIG_FILENAME
@@ -262,11 +263,16 @@ class RecognitionConfig:
     track_max_age_seconds: float = 1.5
     max_faces: int = 5
     iou_threshold: float = 0.3
+    # Cosine score of the closest different-person pair, and of the weakest
+    # same-person pair. They anchor the confidence scale; `main.py calibrate`
+    # measures both on your own database.
+    confidence_impostor_ceiling: float = 0.20
+    confidence_genuine_floor: float = 0.48
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> RecognitionConfig:
         path = "recognition"
-        return cls(
+        config = cls(
             similarity_threshold=_get_float(
                 data, "similarity_threshold", 0.45, path, minimum=-1.0, maximum=1.0
             ),
@@ -292,6 +298,27 @@ class RecognitionConfig:
             ),
             max_faces=_get_int(data, "max_faces", 5, path, minimum=1, maximum=64),
             iou_threshold=_get_float(data, "iou_threshold", 0.3, path, minimum=0.01, maximum=1.0),
+            confidence_impostor_ceiling=_get_float(
+                data, "confidence_impostor_ceiling", 0.20, path, minimum=-1.0, maximum=1.0
+            ),
+            confidence_genuine_floor=_get_float(
+                data, "confidence_genuine_floor", 0.48, path, minimum=-1.0, maximum=1.0
+            ),
+        )
+        if config.confidence_genuine_floor <= config.confidence_impostor_ceiling:
+            raise ConfigError(
+                f"{path}.confidence_genuine_floor ({config.confidence_genuine_floor}) must be "
+                f"above confidence_impostor_ceiling ({config.confidence_impostor_ceiling}); "
+                "otherwise the two populations overlap and the scale has nothing to separate."
+            )
+        return config
+
+    @property
+    def calibration(self) -> SeparationCalibration:
+        """The scale that turns a raw cosine score into a readable confidence."""
+        return SeparationCalibration(
+            impostor_ceiling=self.confidence_impostor_ceiling,
+            genuine_floor=self.confidence_genuine_floor,
         )
 
     def to_mapping(self) -> dict[str, Any]:

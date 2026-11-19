@@ -146,13 +146,14 @@ class SettingsPage(QWidget):
         card.add(widgets.SectionTitle("Recognition"))
 
         self._threshold = widgets.SliderField(
-            "Similarity threshold",
+            "Similarity threshold (cosine)",
             0,
             95,
             45,
-            lambda value: f"{value}%",
-            hint="Minimum similarity before a name is accepted. Below 40% look-alikes start "
-            "matching; above 60% the same person may be rejected in poor light.",
+            lambda value: f"{value / 100:.2f}",
+            hint="Raw cosine score a match needs. Measured on this model, people who "
+            "are different score under 0.20 and the same person above 0.48, so keep this "
+            "between those two numbers. Run `python main.py calibrate` to measure yours.",
         )
         card.add(self._threshold)
 

@@ -31,6 +31,7 @@ from pathlib import Path
 from config import AttendanceConfig
 
 from .database import AttendanceEntry, AttendanceMark, FaceDatabase
+from .permissions import prepare_private_file
 from .presentation import PresentationVerdict
 
 logger = logging.getLogger(__name__)
@@ -167,7 +168,9 @@ class AttendanceService:
         last = end or today
         entries = self._database.attendance_range(first.isoformat(), last.isoformat())
         target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        # The export is plain text with every full name in it, so it is created
+        # owner-only rather than being written with the default permissions.
+        prepare_private_file(target)
         with target.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(CSV_COLUMNS)

@@ -26,6 +26,8 @@ import numpy as np
 from config import RecognitionConfig
 
 from .attendance import AttendanceDecision, AttendanceService
+from .calibration import DEFAULT as DEFAULT_CALIBRATION
+from .calibration import SeparationCalibration
 from .face_detector import DetectedFace, FaceDetector
 from .liveness import LivenessDetector
 from .presentation import PresentationVerdict
@@ -64,6 +66,7 @@ class RecognizedFace:
     presentation: PresentationVerdict | None = None
     attendance: AttendanceDecision | None = None
     embedding: np.ndarray | None = None
+    calibration: SeparationCalibration = DEFAULT_CALIBRATION
 
     @property
     def bbox(self) -> np.ndarray:
@@ -83,7 +86,21 @@ class RecognizedFace:
 
     @property
     def percentage(self) -> int:
+        """The raw cosine score as a whole percentage.
+
+        This is the same scale as `recognition.similarity_threshold`, so it is what
+        the threshold is compared against. It is not a confidence; `confidence` is.
+        """
         return to_percentage(self.similarity_smoothed)
+
+    @property
+    def confidence(self) -> int:
+        """Calibrated confidence, 1 to 99, that this is the same person."""
+        return self.calibration.percentage(self.similarity_smoothed)
+
+    @property
+    def confidence_text(self) -> str:
+        return self.calibration.display(self.similarity_smoothed)
 
     @property
     def display_name(self) -> str:
@@ -103,8 +120,8 @@ class RecognizedFace:
     def label(self) -> str:
         """Single line for the on-frame HUD."""
         if self.presentation is not None:
-            return f"{self.display_name}  {self.percentage}%  [{self.presentation.short_label}]"
-        return f"{self.display_name}  {self.percentage}%"
+            return f"{self.display_name}  {self.confidence_text}  [{self.presentation.short_label}]"
+        return f"{self.display_name}  {self.confidence_text}"
 
 
 @dataclass(frozen=True)
@@ -186,6 +203,7 @@ class FaceRecognitionSession:
         self._enforce_presentation = enforce_presentation
         self._attendance = attendance
         self._matcher = FaceMatcher(config.similarity_threshold, config.ambiguity_margin)
+        self._calibration = config.calibration
         self._tracks: dict[int, _Track] = {}
         self._track_ids = itertools.count(1)
         self._frame_index = 0
@@ -208,6 +226,10 @@ class FaceRecognitionSession:
         return self._matcher.threshold
 
     @property
+    def calibration(self) -> SeparationCalibration:
+        return self._calibration
+
+    @property
     def config(self) -> RecognitionConfig:
         return self._config
 
@@ -215,6 +237,7 @@ class FaceRecognitionSession:
         """Apply changed thresholds without rebuilding the session."""
         self._config = config
         self._matcher = FaceMatcher(config.similarity_threshold, config.ambiguity_margin)
+        self._calibration = config.calibration
 
     @property
     def track_count(self) -> int:
@@ -423,6 +446,7 @@ class FaceRecognitionSession:
                 similarity_smoothed=0.0,
                 hits=0,
                 reason="analysing",
+                calibration=self._calibration,
                 presentation=track.presentation,
                 attendance=track.attendance,
                 embedding=track.embedding,
@@ -457,4 +481,5 @@ class FaceRecognitionSession:
             presentation=presentation,
             attendance=track.attendance,
             embedding=track.embedding,
+            calibration=self._calibration,
         )

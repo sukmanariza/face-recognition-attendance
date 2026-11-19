@@ -88,3 +88,20 @@ def write_private_file(path: Path, payload: bytes) -> None:
             temporary.unlink()
         raise
     restrict_to_owner(path)
+
+
+def prepare_private_file(path: Path, *, directory: bool = False) -> None:
+    """Create an empty file (or directory) that is already owner-only.
+
+    Use this before handing a path to something else that writes to it, such as
+    SQLite or the CSV writer. Restricting afterwards would leave the content readable
+    for as long as the write takes.
+    """
+    path = Path(path)
+    if directory:
+        path.mkdir(parents=True, exist_ok=True)
+        restrict_to_owner(path, directory=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    restrict_to_owner(path)
