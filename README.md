@@ -1,4 +1,4 @@
-# Face ID: local face recognition and attendance
+<img width="1461" height="988" alt="image" src="https://github.com/user-attachments/assets/001b2f80-ef5d-4e82-aec1-2477f903dcfc" /># Face ID: local face recognition and attendance
 
 > **Learning project.** Built to study how face recognition works. It is not a product,
 > and it is not certified for security, payroll, or disciplinary decisions.
@@ -93,6 +93,14 @@ Start the window with:
 ```bash
 python main.py
 ```
+
+<img width="1465" height="942" alt="image" src="https://github.com/user-attachments/assets/7dc8dd7b-3e1e-4a2e-b3d5-0b0ebad51384" />
+<img width="1473" height="987" alt="image" src="https://github.com/user-attachments/assets/fea969d9-9496-4b5b-92c1-89bea19add3d" />
+<img width="1468" height="992" alt="image" src="https://github.com/user-attachments/assets/5cb5e9a8-5df9-4709-8a7d-02ec6f14ad12" />
+<img width="1470" height="981" alt="image" src="https://github.com/user-attachments/assets/af9603b6-d45c-47d8-a0ee-18ef984a0d1b" />
+<img width="1465" height="971" alt="image" src="https://github.com/user-attachments/assets/6047b7bd-4a4a-4cba-805f-3b336b1bfe69" />
+<img width="1461" height="988" alt="image" src="https://github.com/user-attachments/assets/7ef06d3b-8db0-417c-a09d-798ba0652d9d" />
+
 
 The sidebar has six pages:
 
