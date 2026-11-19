@@ -269,6 +269,72 @@ class ThreadTests(DatabaseTestCase):
         self.assertIn("error", after_close)
 
 
+class WriteLockTests(unittest.TestCase):
+    """No path may leave a transaction open, or the next save reports a locked file.
+
+    A sighting committed the attendance row and then wrote the audit entry outside
+    any transaction. That insert opened one and nothing closed it, so the connection
+    held the write lock for the life of the process, and the next identity could not
+    be saved: "database is locked".
+    """
+
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        # A short timeout turns a regression into a fast failure instead of a hang.
+        self.database = FaceDatabase(
+            Path(self._directory.name) / "faces.db", busy_timeout_ms=250
+        )
+        self.addCleanup(self.database.close)
+        self.database.add_employee("001", "Ana", [sample(1)])
+
+    def _run_in_thread(self, action) -> dict[str, object]:
+        outcome: dict[str, object] = {}
+
+        def target() -> None:
+            try:
+                outcome["value"] = action()
+            except Exception as exc:  # noqa: BLE001 - reported to the assertion below
+                outcome["error"] = f"{type(exc).__name__}: {exc}"
+
+        thread = threading.Thread(target=target)
+        thread.start()
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        return outcome
+
+    def test_marking_attendance_commits_its_audit_entry(self) -> None:
+        marked = self._run_in_thread(
+            lambda: self.database.mark_present("001", "2026-11-19", "08:00")
+        )
+
+        self.assertNotIn("error", marked, marked.get("error"))
+        self.assertFalse(
+            self.database._connection.in_transaction,
+            "an open transaction would hold the write lock",
+        )
+
+    def test_a_sighting_does_not_block_the_next_identity(self) -> None:
+        sighting = self._run_in_thread(
+            lambda: self.database.mark_present("001", "2026-11-19", "08:00")
+        )
+        self.assertNotIn("error", sighting, sighting.get("error"))
+
+        saved = self._run_in_thread(
+            lambda: self.database.add_employee("002", "Budi", [sample(2)]).full_name
+        )
+
+        self.assertNotIn("error", saved, saved.get("error"))
+        self.assertEqual(saved["value"], "Budi")
+
+    def test_finished_threads_do_not_accumulate_connections(self) -> None:
+        for _ in range(4):
+            self.assertNotIn("error", self._run_in_thread(self.database.count_employees))
+
+        # The GUI thread plus at most the most recent worker.
+        self.assertLessEqual(len(self.database._connections), 2)
+
+
 class EncryptionTests(unittest.TestCase):
     """Values are encrypted at rest and need the key to be read back."""
 

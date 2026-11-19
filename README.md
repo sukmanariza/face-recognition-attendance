@@ -13,15 +13,17 @@ board such as a Raspberry Pi.
 
 ## What it can do
 
-- **Recognise people you enrolled.** The camera shows who it sees, with a similarity
-  percentage, and a name only appears after several frames agree.
+- **Recognise people you enrolled.** Every face in the picture gets a box with its name
+  and similarity above it, so a second person in shot is visible instead of confusing.
+  A name only appears after several frames agree.
 - **Tell a real face from a photo or a screen.** The program measures small differences
   in how a face moves. A flat photo behaves differently from a real head.
 - **Keep a daily attendance list.** A confirmed sighting marks the person present once
   per day, marked late if they arrive after the working hours you set. You can export a
   month to a spreadsheet file.
-- **Keep personal data unreadable.** Names and face data are encrypted on disk. Without
-  the key file, a copy of the database cannot be read.
+- **Keep personal data unreadable.** Names and face data are encrypted on disk, and the
+  key file is readable by your own account only. Without that file, a copy of the
+  database cannot be read.
 - **Manage people.** Rename, deactivate (stops matching, keeps the history), or delete,
   plus a log of who changed what.
 - **Run on weak hardware.** It adapts itself to the computer it finds, down to a small

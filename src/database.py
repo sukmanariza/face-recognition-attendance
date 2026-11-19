@@ -23,9 +23,7 @@ Design notes:
 
 from __future__ import annotations
 
-import contextlib
 import logging
-import os
 import re
 import sqlite3
 import threading
@@ -37,6 +35,7 @@ from pathlib import Path
 import numpy as np
 
 from .crypto import CryptoError, FieldCipher
+from .permissions import restrict_to_owner
 from .similarity import IdentityRecord
 
 logger = logging.getLogger(__name__)
@@ -120,15 +119,8 @@ def _utc_now() -> str:
 
 
 def _restrict_permissions(path: Path, mode: int) -> None:
-    """Restrict a file or directory to its owner (POSIX only).
-
-    The database holds face embeddings, which are biometric data. On Windows the
-    profile directory ACL already limits access, so nothing is changed there.
-    """
-    if os.name != "posix":  # pragma: no cover - only POSIX has file modes
-        return
-    with contextlib.suppress(OSError):
-        os.chmod(path, mode)
+    """Restrict a file or directory to its owner: POSIX modes, Windows ACL."""
+    restrict_to_owner(path, directory=mode != 0o600)
 
 
 def validate_employee_id(employee_id: str) -> str:
@@ -255,7 +247,9 @@ class FaceDatabase:
         self._cipher = cipher
         self._busy_timeout_s = busy_timeout_ms / 1000.0
         self._lock = threading.Lock()
-        self._connections: list[sqlite3.Connection] = []
+        # Thread id -> (owning thread, connection). The owner is kept so a finished
+        # thread's connection can be closed instead of holding the write lock.
+        self._connections: dict[int, tuple[threading.Thread, sqlite3.Connection]] = {}
         self._local = threading.local()
         self._closed = False
 
@@ -290,14 +284,34 @@ class FaceDatabase:
         except sqlite3.Error:
             connection.close()
             raise
+        self._prune_finished_threads()
         with self._lock:
             if self._closed:
                 connection.close()
                 raise DatabaseError(
                     f"Database {self._path} is closed. Create a new FaceDatabase to use it again."
                 )
-            self._connections.append(connection)
+            self._connections[threading.get_ident()] = (threading.current_thread(), connection)
         return connection
+
+    def _prune_finished_threads(self) -> None:
+        """Close the connections of threads that have ended.
+
+        A worker thread that stops while a statement is uncommitted would otherwise
+        keep the database write lock for the life of the process, and the next save
+        anywhere in the app fails with "database is locked". Closing the connection
+        rolls that transaction back.
+        """
+        current = threading.current_thread()
+        with self._lock:
+            stale = [
+                ident
+                for ident, (owner, _) in self._connections.items()
+                if owner is not current and not owner.is_alive()
+            ]
+            expired = [self._connections.pop(ident)[1] for ident in stale]
+        for connection in expired:
+            connection.close()
 
     @property
     def _connection(self) -> sqlite3.Connection:
@@ -325,11 +339,11 @@ class FaceDatabase:
     def close(self) -> None:
         """Close every connection, including the ones opened by other threads."""
         with self._lock:
-            connections, self._connections = self._connections, []
+            owned = list(self._connections.values())
+            self._connections = {}
             self._closed = True
-        for connection in connections:
+        for _, connection in owned:
             connection.close()
-        self._local = threading.local()
         self._local = threading.local()
 
     @property
@@ -453,9 +467,8 @@ class FaceDatabase:
                 self._set_meta("encryption", ENCRYPTION_MODE)
         except (sqlite3.Error, CryptoError) as exc:
             raise DatabaseError(f"Could not encrypt the existing database: {exc}") from exc
-        # An UPDATE leaves the old plain-text pages in the file and in the WAL.
-        # Checkpoint plus VACUUM rewrites both, so the migration does not leave a
-        # readable copy of the names behind.
+        # An UPDATE leaves the old plain-text pages in the file and the WAL; checkpoint
+        # and VACUUM rewrite both, so no readable copy of the names survives.
         try:
             self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._connection.execute("VACUUM")
@@ -830,12 +843,18 @@ class FaceDatabase:
         return deleted
 
     def _audit(self, action: str, detail: str) -> None:
-        """Append to the local audit trail (best effort, never blocks a write)."""
+        """Append to the local audit trail (best effort, never blocks a write).
+
+        The row is committed on its own. An audit entry written while no other
+        transaction is open would leave one open, and that holds the database write
+        lock until the connection is closed.
+        """
         try:
-            self._connection.execute(
-                "INSERT INTO audit_log(at, action, detail) VALUES (?, ?, ?)",
-                (_utc_now(), action, detail),
-            )
+            with self._connection:
+                self._connection.execute(
+                    "INSERT INTO audit_log(at, action, detail) VALUES (?, ?, ?)",
+                    (_utc_now(), action, detail),
+                )
         except sqlite3.Error:  # pragma: no cover - the trail must not break a save
             logger.warning("Could not write an audit entry for %s", action)
 

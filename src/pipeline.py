@@ -238,9 +238,8 @@ class InferenceThread(threading.Thread):
         self._recognition: FrameProcessor | None = None
         self._registration: RegistrationProcessor | None = None
         self._rate = RateCounter()
-        # The handoff slot counts publishes; the camera counts frames and skips
-        # numbers when a frame arrives while nobody is reading. Waiting must use the
-        # slot counter, or a skipped sequence parks this thread far behind.
+        # The slot counts publishes; the camera numbers frames and skips some. Waiting
+        # must use the slot counter, or a skipped number parks this thread far behind.
         self._last_sequence = 0
         self._dropped = 0
         self._error: str | None = None

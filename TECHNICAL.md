@@ -47,6 +47,11 @@ flowchart LR
 - The interface polls every 8 ms. It paints the newest captured frame on every poll and
   takes the readout text from the inference result, so a slow detection cannot make the
   video stutter.
+- Boxes and names are painted by the video widget in widget coordinates, scaled from the
+  frame pixels of the last result. Nothing is drawn into the frame buffer, so the picture
+  stays a zero-copy view of the camera array. A box is drawn for every face, which
+  matters when two people are in shot, and the label sits above the box, folding inside
+  it when the face is at the top edge.
 - Labels are only rewritten when their text or tone actually changes, and the
   statistics row refreshes four times per second instead of once per frame. At 20 to 30
   results per second, restyling a widget per result is visible as flicker.
@@ -191,10 +196,13 @@ The values that identify a person are encrypted before they are written:
 | Face embeddings | AES-GCM, bound to the employee ID |
 | Employee ID, timestamps, scores, attendance dates | readable, so the app can query and sort |
 
-The key is 32 random bytes in `database/face_key.bin`, restricted to the owner. A value
-is bound to its place with associated data (`employees:001:full_name`), so a ciphertext
-copied into another row fails to decrypt instead of silently moving a name to a
-different person.
+The key is 32 random bytes in `database/face_key.bin`, restricted to the owner: mode
+`0600` on POSIX, and on Windows an ACL built with the shipped `icacls` that drops
+inherited entries and grants the current account alone. Without that second step the
+key inherited `Authenticated Users: Modify` from its folder, which let any other
+account on the machine copy the key and decrypt every face. A value is bound to its
+place with associated data (`employees:001:full_name`), so a ciphertext copied into
+another row fails to decrypt instead of silently moving a name to a different person.
 
 With a passphrase supplied (`FACEID_PASSPHRASE` or `--passphrase`) the key file holds
 the key wrapped with AES-GCM under a scrypt-derived key, and copying the file is no
@@ -266,14 +274,36 @@ residual concentrated at the nose.
 
 The check measures exactly that, per face and over time:
 
-1. keep the five landmarks of the last frames;
-2. for a few pairs of frames with enough head movement, fit a homography from the
-   earlier landmarks to the newer ones;
-3. compare the nose residual with the residual of the four landmarks that are coplanar
-   by construction. That second number is the detector's own jitter, so the comparison
-   is against the noise floor rather than a fixed pixel value.
+1. keep the five landmarks of the last frames, dropping anything older than
+   `liveness.observation_window_seconds`;
+2. for every usable pair of frames with enough head movement, fit a homography from
+   the earlier landmarks to the later ones, **using only the four landmarks that are
+   coplanar by construction** (both eyes, both mouth corners);
+3. measure how far the nose lands from where that plane predicts it, relative to the
+   eye distance. The fit is exact on the four points it uses, so none of the depth is
+   absorbed into it and the nose residual is the whole signal.
 
-### 5.2 Verdicts and modes
+### 5.2 Why the label does not flicker
+
+A single frame pair is noisy, and a label that changes every second is worse than no
+label. Three mechanisms keep the published answer steady, and they are why the label
+now changes once or twice per session instead of several times per second:
+
+| Mechanism | Setting | What it prevents |
+| --- | --- | --- |
+| Decisions run on a timer, not per frame | `liveness.decision_interval_seconds` (1.5 s) | Recomputing from one or two new frames |
+| The decision uses the **median over every pair** in the window | `liveness.observation_window_seconds` (3 s) | One lucky or unlucky pair deciding the answer |
+| A new level must repeat before it is published | `liveness.stability_windows` (2) | A single doubtful window flipping the label |
+
+Landmarks are still collected on every frame, so a shorter interval only makes the
+first answer arrive sooner. When the evidence sits between the two thresholds, the
+label stays *Not verified* rather than guessing, because a wrong "photo" accusation is
+worse than an honest "cannot tell".
+
+The guard is also reset whenever the person being watched changes, or when a second
+person walks into frame, so one face's landmarks can never become another's evidence.
+
+### 5.3 Verdicts and modes
 
 | Label | Meaning |
 | --- | --- |
@@ -290,7 +320,7 @@ Attendance does the same while `attendance.require_live_face` is on.
 The check needs one face at a time, because it compares a face with itself over time.
 With two people in view the label stays *Not verified*.
 
-### 5.3 What it catches and what it cannot
+### 5.4 What it catches and what it cannot
 
 Catches: a printed photo, or a still image on a screen, moved or turned in the hand.
 
@@ -442,6 +472,9 @@ The Settings page exposes these; the same keys work in `settings.json`.
 | `liveness.mode` | advisory | `off`, `advisory` (label only), `enforce` (refuse a detected photo) |
 | `liveness.min_observations` | 8 | Frames of movement before a verdict is offered |
 | `liveness.sensitivity` | 0.5 | Higher reacts to smaller head movements |
+| `liveness.decision_interval_seconds` | 1.5 | How often the verdict is recomputed; lower reacts sooner and flickers more |
+| `liveness.stability_windows` | 2 | Agreeing decisions needed before the label changes |
+| `liveness.observation_window_seconds` | 3.0 | Landmarks older than this stop counting as evidence |
 | `database.encrypt` | true | AES-GCM for names and embeddings |
 | `database.key_file` | database/face_key.bin | Where the key lives. Back it up separately |
 | `attendance.enabled` | true | Mark presence on a confirmed match |
@@ -511,6 +544,7 @@ src/
   presentation.py       real 3D face versus a photo or a screen (parallax test)
   liveness.py           the detector contract and the presentation verdict
   crypto.py             AES-GCM field encryption and key handling
+  permissions.py        owner-only files: POSIX modes and a Windows ACL
   database.py           SQLite: identities, embeddings, attendance, audit, backup
   attendance.py         daily presence rules and CSV export
   guidance.py           user-facing instructions during enrollment
@@ -553,7 +587,7 @@ ignored by git.
 ### 11.1 Checks
 
 ```bash
-python -m unittest discover                                  # 411 tests, no camera or model needed
+python -m unittest discover                                  # 437 tests, no camera or model needed
 uv tool run ruff check . --exclude .venv                     # lint
 uv tool run pyright                                          # types
 uv tool run vulture main.py config.py src tests              # dead code
@@ -584,7 +618,8 @@ Qt platform and assert behaviour rather than pixels.
 ## 12. Threat model summary
 
 What the encryption protects: someone who copies the SQLite file, or a backup of it,
-cannot read names or embeddings without the key.
+cannot read names or embeddings without the key. Other accounts on the same machine
+cannot read the key either, because it is owner-only on both platforms (section 4.3).
 
 What it does not protect: an attacker who is already running code as your user on the
 machine, because the app needs the key open to work. SQLite itself is not encrypted, so

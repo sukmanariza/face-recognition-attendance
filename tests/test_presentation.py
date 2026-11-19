@@ -82,11 +82,23 @@ def guard_config(**overrides) -> LivenessConfig:
     return LivenessConfig(**base)
 
 
-def run_sequence(points: list[np.ndarray], config: LivenessConfig | None = None) -> PresentationVerdict:
+def run_sequence(
+    points: list[np.ndarray],
+    config: LivenessConfig | None = None,
+    *,
+    seconds: float = 5.0,
+    interval: float = 0.1,
+) -> PresentationVerdict:
+    """Replay the pose sequence like a live session, for a few seconds.
+
+    The guard only decides every ``decision_interval_seconds``, so a handful of
+    frames is not enough to see a verdict.
+    """
     guard = PresentationGuard(config or guard_config())
+    steps = max(1, round(seconds / interval))
     verdict = guard.verdict
-    for index, frame_points in enumerate(points):
-        verdict = guard.observe(as_face(frame_points), timestamp=index * 0.1)
+    for step in range(steps):
+        verdict = guard.observe(as_face(points[step % len(points)]), timestamp=step * interval)
     return verdict
 
 
@@ -168,6 +180,90 @@ class GuardTests(unittest.TestCase):
 
     def test_describe_mentions_the_measure(self) -> None:
         self.assertIn("parallax", PresentationGuard(guard_config()).describe())
+
+
+class StabilityTests(unittest.TestCase):
+    """The label has to hold still: it is read by a person watching the screen."""
+
+    # A head that keeps turning, never repeating the same pose within a window.
+    SWEEP = tuple(1.5 * index for index in range(24))
+
+    @staticmethod
+    def _levels(guard: PresentationGuard, points: list[np.ndarray], steps: int) -> list[SpoofLevel]:
+        levels: list[SpoofLevel] = []
+        for step in range(steps):
+            verdict = guard.observe(as_face(points[step % len(points)]), timestamp=step * 0.1)
+            levels.append(verdict.level)
+        return levels
+
+    def test_the_label_holds_for_a_whole_session(self) -> None:
+        for depth, expected in ((0.0, SpoofLevel.SUSPECTED), (20.0, SpoofLevel.GENUINE)):
+            with self.subTest(depth=depth):
+                guard = PresentationGuard(guard_config())
+                levels = self._levels(guard, sequence(depth, self.SWEEP), 200)
+
+                changes = [
+                    index
+                    for index in range(1, len(levels))
+                    if levels[index] is not levels[index - 1]
+                ]
+                self.assertEqual(len(changes), 1, f"levels changed at {changes}")
+                self.assertEqual(levels[-1], expected)
+
+    def test_the_decision_waits_for_the_interval(self) -> None:
+        guard = PresentationGuard(guard_config(decision_interval_seconds=2.0))
+        points = sequence(20.0, self.SWEEP)
+
+        raised = None
+        for step in range(80):
+            verdict = guard.observe(as_face(points[step % len(points)]), timestamp=step * 0.1)
+            if verdict.level is SpoofLevel.GENUINE:
+                raised = step
+                break
+
+        self.assertIsNotNone(raised, "the verdict never became genuine")
+        assert raised is not None
+        # Decisions land at 0 s, 2 s and 4 s, never on every frame.
+        self.assertGreaterEqual(raised * 0.1, 1.9)
+
+    def test_one_contradicting_window_does_not_flip_the_label(self) -> None:
+        guard = PresentationGuard(guard_config(stability_windows=3))
+        real = sequence(20.0, self.SWEEP)
+        flat = sequence(0.0, self.SWEEP)
+
+        for step in range(100):
+            guard.observe(as_face(real[step % len(real)]), timestamp=step * 0.1)
+        self.assertEqual(guard.verdict.level, SpoofLevel.GENUINE)
+
+        # One window of photo evidence, which is not enough to change the label.
+        for step in range(100, 115):
+            guard.observe(as_face(flat[step % len(flat)]), timestamp=step * 0.1)
+
+        self.assertEqual(guard.verdict.level, SpoofLevel.GENUINE)
+
+    def test_a_pause_forgets_the_old_observations(self) -> None:
+        guard = PresentationGuard(guard_config(observation_window_seconds=1.0))
+        points = sequence(20.0, self.SWEEP)
+        for step in range(20):
+            guard.observe(as_face(points[step]), timestamp=step * 0.1)
+        self.assertGreater(guard.observation_count, 5)
+
+        # The person left the frame for ten seconds.
+        guard.observe(as_face(points[0]), timestamp=10.0)
+
+        self.assertEqual(guard.observation_count, 1)
+
+    def test_reset_also_clears_the_pending_change(self) -> None:
+        guard = PresentationGuard(guard_config())
+        points = sequence(20.0, self.SWEEP)
+        for step in range(40):
+            guard.observe(as_face(points[step % len(points)]), timestamp=step * 0.1)
+
+        guard.reset()
+        verdict = guard.observe(as_face(points[0]), timestamp=100.0)
+
+        self.assertEqual(verdict.level, SpoofLevel.UNCERTAIN)
+        self.assertIn("Collecting", verdict.detail)
 
 
 class DetectorTests(unittest.TestCase):

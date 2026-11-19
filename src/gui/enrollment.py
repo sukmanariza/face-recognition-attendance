@@ -29,6 +29,7 @@ from src.enrollment_plan import build_plan
 from src.face_registration import (
     FaceRegistrationSession,
     RegistrationError,
+    SampleAttempt,
     SampleStatus,
 )
 from src.guidance import checklist_hints
@@ -465,6 +466,7 @@ class EnrollmentPage(QWidget):
         self._preview.set_caption(
             f"{attempt.collected}/{attempt.required}  {attempt.status.value}"
         )
+        self._video.set_overlays(self._face_overlays(attempt))
         self._progress.setValue(int(attempt.progress * 100))
         self._mark_stage(attempt.collected)
 
@@ -473,7 +475,6 @@ class EnrollmentPage(QWidget):
             self._last_prompt = attempt.prompt
 
         self._show_presentation(attempt.presentation)
-
         if attempt.status is SampleStatus.REJECTED and attempt.message:
             self._banner.show_message(attempt.message, "warning")
         elif attempt.status is SampleStatus.CAPTURED:
@@ -482,6 +483,32 @@ class EnrollmentPage(QWidget):
             )
         elif attempt.status is SampleStatus.COMPLETE:
             self._on_capture_complete()
+
+    def _face_overlays(self, attempt: SampleAttempt) -> list[widgets.FaceOverlay]:
+        """Box every face so an extra person in frame is visible, not just refused."""
+        palette = self._context.palette
+        faces = attempt.faces
+        overlays: list[widgets.FaceOverlay] = []
+        for index, face in enumerate(faces):
+            if len(faces) == 1:
+                label = attempt.stage_title or "Face"
+                colour = palette.accent
+            else:
+                label = f"Face {index + 1} of {len(faces)}"
+                colour = palette.warning
+            overlays.append(
+                widgets.FaceOverlay(
+                    bbox=(
+                        float(face.bbox[0]),
+                        float(face.bbox[1]),
+                        float(face.bbox[2]),
+                        float(face.bbox[3]),
+                    ),
+                    label=label,
+                    color=colour,
+                )
+            )
+        return overlays
 
     def _show_presentation(self, verdict: PresentationVerdict | None) -> None:
         if not self._context.config.liveness.enabled:

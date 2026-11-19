@@ -192,6 +192,7 @@ class FaceRecognitionSession:
         self._last_detections: list[DetectedFace] = []
         self._fps = 0.0
         self._last_frame_at: float | None = None
+        self._presentation_track: int | None = None
 
     @property
     def gallery(self) -> GalleryIndex:
@@ -225,6 +226,7 @@ class FaceRecognitionSession:
         self._frame_index = 0
         self._fps = 0.0
         self._last_frame_at = None
+        self._presentation_track = None
         if self._liveness is not None:
             self._liveness.reset()
 
@@ -322,8 +324,16 @@ class FaceRecognitionSession:
         if self._liveness is None or track.landmarks is None:
             return
         if not single:
+            # A second person would put their landmarks into the same series.
+            if self._presentation_track is not None:
+                self._liveness.reset()
+                self._presentation_track = None
             track.presentation = None
             return
+        if self._presentation_track != track.track_id:
+            # A different person: the previous series says nothing about this one.
+            self._liveness.reset()
+            self._presentation_track = track.track_id
         face = DetectedFace(
             bbox=track.bbox, det_score=track.det_score, landmarks=track.landmarks
         )

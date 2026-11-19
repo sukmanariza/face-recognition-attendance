@@ -36,9 +36,8 @@ PREFERENCE: tuple[str, ...] = (
 
 GPU_PROVIDERS = frozenset(PREFERENCE[:-1])
 
-# DirectML runs one inference at a time and cannot pre-allocate memory patterns;
-# ONNX Runtime refuses to create the session otherwise. TensorRT has the same
-# restriction.
+# DirectML cannot pre-allocate memory patterns or run inferences in parallel, and ONNX
+# Runtime refuses the session otherwise. TensorRT has the same restriction.
 SERIAL_PROVIDERS = frozenset({"DmlExecutionProvider", "TensorrtExecutionProvider"})
 
 LABELS = {

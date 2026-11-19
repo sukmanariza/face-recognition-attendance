@@ -7,11 +7,22 @@ instead of repeating stylesheet details.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import ClassVar
 
 import numpy as np
 from PySide6.QtCore import QLocale, QRect, QSize, Qt, QThread, QTime, Signal
-from PySide6.QtGui import QFont, QImage, QPainter, QPaintEvent, QPalette
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QImage,
+    QPainter,
+    QPaintEvent,
+    QPalette,
+    QPen,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -69,7 +80,7 @@ class Worker(QThread):
     def run(self) -> None:
         try:
             self.succeeded.emit(self._action())
-        except Exception as exc:  # noqa: BLE001 - the message is shown in the UI
+        except Exception as exc:  # noqa: BLE001 - the page shows the message
             self.failed.emit(str(exc))
 
 
@@ -144,6 +155,76 @@ class Badge(QLabel):
         self.setObjectName("BadgeAccent" if accent else "Badge")
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.setMinimumHeight(max(20, self.fontMetrics().height() + 8))
+
+
+class FixedLinesLabel(QLabel):
+    """A word-wrapped label that always occupies the same number of lines.
+
+    A readout card that grows and shrinks with its text makes the whole column jump
+    every time a message appears or disappears. This keeps the height constant by
+    reserving ``lines`` lines, wrapping the text into them, and shortening the last
+    line with an ellipsis when it does not fit. Nothing is ever clipped mid-glyph,
+    and the full text stays available as a tooltip.
+    """
+
+    def __init__(self, lines: int = 2, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__("", parent)
+        self._lines = max(1, lines)
+        self._full_text = ""
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        self._full_text = text or ""
+        self._refit()
+
+    def text(self) -> str:
+        """The full text, not the shortened version on screen."""
+        return self._full_text
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._refit()
+
+    def _reserved_height(self) -> int:
+        metrics = self.fontMetrics()
+        return self._lines * metrics.lineSpacing() + 2
+
+    def _refit(self) -> None:
+        metrics = self.fontMetrics()
+        width = max(0, self.contentsRect().width())
+        self.setFixedHeight(self._reserved_height())
+        if width == 0 or not self._full_text:
+            super().setText("")
+            self.setToolTip("")
+            return
+        wrapped = _wrap_words(metrics, self._full_text, width)
+        if len(wrapped) > self._lines:
+            head = wrapped[: self._lines - 1]
+            rest = " ".join(wrapped[self._lines - 1 :])
+            shown = metrics.elidedText(rest, Qt.TextElideMode.ElideRight, width)
+            wrapped = [*head, shown]
+        shown_text = "\n".join(wrapped)
+        super().setText(shown_text)
+        self.setToolTip("" if shown_text == self._full_text else self._full_text)
+
+
+def _wrap_words(metrics: QFontMetrics, text: str, width: int) -> list[str]:
+    """Split text into lines no wider than ``width``, one word at a time."""
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        candidate = f"{current} {word}" if current else word
+        if not current or metrics.horizontalAdvance(candidate) <= width:
+            current = candidate
+            continue
+        lines.append(current)
+        current = word
+    if current:
+        lines.append(current)
+    return lines
 
 
 def scroll_area(
@@ -480,8 +561,26 @@ class SectionTitle(QLabel):
         self.setFont(font)
 
 
+@dataclass
+class FaceOverlay:
+    """One detected face: a box in frame pixels plus the text above it.
+
+    Kept as plain data so the pages stay free of painting logic, and so the box can
+    be asserted in a test without rendering anything.
+    """
+
+    bbox: tuple[float, float, float, float]
+    label: str
+    color: str = "#E39A26"
+
+    def __post_init__(self) -> None:
+        x1, y1, x2, y2 = (float(value) for value in self.bbox)
+        # Detection boxes arrive in any order and can poke outside the frame.
+        self.bbox = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+
 class VideoView(QFrame):
-    """Paints the newest camera frame, letterboxed, with an optional caption."""
+    """Paints the newest camera frame, letterboxed, with boxes and a caption."""
 
     def __init__(self, placeholder: str = "Camera is off", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -492,16 +591,23 @@ class VideoView(QFrame):
         self._buffer: np.ndarray | None = None
         self._placeholder = placeholder
         self._caption = ""
+        self._overlays: tuple[FaceOverlay, ...] = ()
 
     def set_frame(self, image: np.ndarray, caption: str = "") -> None:
         self._image, self._buffer = to_qimage_shared(image)
         self._caption = caption
         self.update()
 
+    def set_overlays(self, overlays: Sequence[FaceOverlay]) -> None:
+        """Boxes drawn on top of the picture, in frame pixel coordinates."""
+        self._overlays = tuple(overlays)
+        self.update()
+
     def clear_frame(self, placeholder: str | None = None) -> None:
         self._image = None
         self._buffer = None
         self._caption = ""
+        self._overlays = ()
         if placeholder is not None:
             self._placeholder = placeholder
         self.update()
@@ -521,6 +627,8 @@ class VideoView(QFrame):
 
         target = self._scaled_rect(area, self._image)
         painter.drawImage(target, self._image)
+        if self._overlays:
+            self._draw_overlays(painter, target, self._image.size())
         if self._caption:
             painter.setPen(self.palette().color(QPalette.ColorRole.Text))
             font = painter.font()
@@ -534,6 +642,51 @@ class VideoView(QFrame):
             )
         painter.end()
 
+    def _draw_overlays(self, painter: QPainter, target: QRect, size: QSize) -> None:
+        """Draw one box and one label per face, scaled from frame to widget pixels."""
+        if size.width() <= 0 or size.height() <= 0:
+            return
+        scale_x = target.width() / size.width()
+        scale_y = target.height() / size.height()
+
+        font = painter.font()
+        font.setPointSize(9)
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+
+        for overlay in self._overlays:
+            x1, y1, x2, y2 = overlay.bbox
+            box = QRect(
+                target.x() + round(x1 * scale_x),
+                target.y() + round(y1 * scale_y),
+                max(2, round((x2 - x1) * scale_x)),
+                max(2, round((y2 - y1) * scale_y)),
+            ).intersected(target)
+            if box.isEmpty():
+                continue
+
+            colour = QColor(overlay.color)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(colour, 2))
+            painter.drawRect(box)
+
+            # The name sits above the box, and folds inside it when the face is at
+            # the top edge so the text is never cut off.
+            room = max(40, target.right() - box.left() + 1)
+            text = metrics.elidedText(overlay.label, Qt.TextElideMode.ElideRight, room - 10)
+            tag_width = min(room, metrics.horizontalAdvance(text) + 10)
+            tag_height = metrics.height() + 6
+            top = box.top() - tag_height
+            if top < target.top():
+                top = box.top()
+            tag = QRect(box.left(), top, tag_width, tag_height).intersected(target)
+            if tag.isEmpty():
+                continue
+            painter.fillRect(tag, colour)
+            painter.setPen(_readable_text(colour))
+            painter.drawText(tag, Qt.AlignmentFlag.AlignCenter, text)
+
     @staticmethod
     def _scaled_rect(area: QRect, image: QImage) -> QRect:
         scaled = image.size().scaled(area.size(), Qt.AspectRatioMode.KeepAspectRatio)
@@ -543,3 +696,11 @@ class VideoView(QFrame):
             scaled.width(),
             scaled.height(),
         )
+
+
+def _readable_text(background: QColor) -> QColor:
+    """Black or white, whichever stands out on the given fill colour."""
+    luminance = (
+        0.299 * background.red() + 0.587 * background.green() + 0.114 * background.blue()
+    )
+    return QColor(0, 0, 0) if luminance > 150 else QColor(255, 255, 255)

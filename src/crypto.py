@@ -26,11 +26,12 @@ they were registered, but not who they are or what their faces look like.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import secrets
 from pathlib import Path
 from typing import Any
+
+from .permissions import write_private_file
 
 KEY_BYTES = 32
 NONCE_BYTES = 12
@@ -68,13 +69,6 @@ def _derive(passphrase: str, salt: bytes) -> bytes:
     _AESGCM, Scrypt = _load_aead()
     kdf = Scrypt(salt=salt, length=KEY_BYTES, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P)
     return kdf.derive(passphrase.encode("utf-8"))
-
-
-def _restrict(path: Path, mode: int) -> None:
-    if os.name != "posix":  # pragma: no cover - only POSIX exposes file modes
-        return
-    with contextlib.suppress(OSError):
-        os.chmod(path, mode)
 
 
 class FieldCipher:
@@ -163,12 +157,14 @@ def _read_key_file(path: Path, passphrase: str | None) -> bytes:
 def _create_key_file(path: Path, passphrase: str | None) -> bytes:
     key = secrets.token_bytes(KEY_BYTES)
     payload = key if not passphrase else _wrap(key, passphrase)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        # Another process created it between the check and here; its key wins, because
+        # overwriting it would strand every value already encrypted with that key.
+        return _read_key_file(path, passphrase)
     try:
-        path.write_bytes(payload)
+        write_private_file(path, payload)
     except OSError as exc:
         raise CryptoError(f"Could not create the key file {path}: {exc}") from exc
-    _restrict(path, 0o600)
     return key
 
 
@@ -189,5 +185,4 @@ def rotate_key(key_path: Path, new_passphrase: str | None, old_passphrase: str |
     """
     key = _read_key_file(Path(key_path), old_passphrase)
     payload = key if not new_passphrase else _wrap(key, new_passphrase)
-    Path(key_path).write_bytes(payload)
-    _restrict(Path(key_path), 0o600)
+    write_private_file(Path(key_path), payload)

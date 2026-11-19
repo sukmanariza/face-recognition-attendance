@@ -22,6 +22,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from config import load_config
 from src.camera import Frame
+from tests.support import make_face
 
 FORBIDDEN_HEX = {
     "#22d3ee",  # cyan
@@ -466,6 +467,216 @@ class EnrollmentNameTests(unittest.TestCase):
             self.window.navigate("home")
         self.assertEqual(self.window._current_key, "home")
         self.assertFalse(self.page.has_unsaved_capture())
+
+
+class ReadoutStabilityTests(unittest.TestCase):
+    """The readout must not resize itself when its text changes.
+
+    The panel sits in a fixed column, so every message that appeared or disappeared
+    moved the card under the cursor. Variable lines now reserve their space and
+    shorten with an ellipsis, keeping the full text in a tooltip.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        existing = QApplication.instance()
+        cls.app = existing if isinstance(existing, QApplication) else QApplication([])
+        cls._directory = tempfile.TemporaryDirectory()
+        base = load_config()
+        cls.config = base.replace(source_path=Path(cls._directory.name) / "config.yaml")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._directory.cleanup()
+
+    def setUp(self) -> None:
+        from src.application import Application
+        from src.gui import MainWindow
+
+        self.application = Application(self.config)
+        self.window = MainWindow(self.application)
+        self.window.show()
+        self.addCleanup(self.window.hide)
+        self.addCleanup(self.window.shutdown)
+
+    def test_a_fixed_lines_label_keeps_its_height(self) -> None:
+        from src.gui import widgets
+
+        label = widgets.FixedLinesLabel(2)
+        label.resize(240, 40)
+        heights = set()
+        for text in ("", "Not checked", "One short line of text.", "Long text " * 40):
+            label.setText(text)
+            self.app.processEvents()
+            heights.add(label.height())
+        self.assertEqual(len(heights), 1, f"heights {sorted(heights)}")
+
+    def test_a_long_message_is_shortened_instead_of_clipped(self) -> None:
+        from src.gui import widgets
+
+        label = widgets.FixedLinesLabel(2)
+        label.resize(200, 40)
+        long_text = "Signals disagree: depth was seen in some frames and not in others. " * 3
+        label.setText(long_text)
+        self.app.processEvents()
+
+        self.assertLessEqual(len(label.text().splitlines()), 2)
+        self.assertTrue(label.toolTip(), "the full text should stay reachable as a tooltip")
+        self.assertIn("Signals disagree", label.toolTip())
+
+    def test_the_match_card_does_not_resize_with_its_text(self) -> None:
+        self.window.navigate("recognition")
+        page = self.window.recognition_page
+        card = page._match_card
+
+        page._reset_readout()
+        self.app.processEvents()
+        idle = card.sizeHint().height()
+
+        page._name.setText("Rifqi Fachriza Sukmana")
+        page._presentation_detail.setText(
+            "Signals disagree: depth was seen in some frames and not in others."
+        )
+        page._reason.setText("Matched at similarity 0.729 (threshold 0.450).")
+        page._threshold_text.setText(
+            "Threshold 45% similarity, confirmed over 3 consecutive checks."
+        )
+        self.app.processEvents()
+        busy = card.sizeHint().height()
+
+        page._presentation_detail.setText("")
+        page._reason.setText("")
+        self.app.processEvents()
+
+        self.assertEqual(busy, idle)
+        self.assertEqual(card.sizeHint().height(), idle)
+
+
+class FaceOverlayTests(unittest.TestCase):
+    """Every detected face gets a box, and a known face is named above it."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        existing = QApplication.instance()
+        cls.app = existing if isinstance(existing, QApplication) else QApplication([])
+        cls._directory = tempfile.TemporaryDirectory()
+        base = load_config()
+        cls.config = base.replace(source_path=Path(cls._directory.name) / "config.yaml")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._directory.cleanup()
+
+    def setUp(self) -> None:
+        from src.application import Application
+        from src.gui import MainWindow
+
+        self.application = Application(self.config)
+        self.window = MainWindow(self.application)
+        self.window.show()
+        self.addCleanup(self.window.hide)
+        self.addCleanup(self.window.shutdown)
+        self.window.navigate("recognition")
+        self.page = self.window.recognition_page
+
+    @staticmethod
+    def _face(state, bbox, name=None, employee_id=None, similarity=0.7):
+        from src.face_recognizer import RecognizedFace
+
+        return RecognizedFace(
+            face=make_face(bbox=bbox),
+            track_id=1,
+            state=state,
+            similarity=similarity,
+            similarity_smoothed=similarity,
+            hits=3,
+            employee_id=employee_id,
+            full_name=name,
+        )
+
+    def test_a_known_face_is_named_above_its_box(self) -> None:
+        from src.face_recognizer import FaceState, FrameRecognition
+
+        recognition = FrameRecognition(
+            faces=(
+                self._face(
+                    FaceState.MATCHED, (10.0, 20.0, 110.0, 140.0), "Ana", "001", 0.73
+                ),
+            )
+        )
+
+        overlays = self.page._face_overlays(recognition)
+
+        self.assertEqual(len(overlays), 1)
+        self.assertIn("Ana", overlays[0].label)
+        self.assertIn("001", overlays[0].label)
+        self.assertIn("73%", overlays[0].label)
+        self.assertEqual(overlays[0].bbox, (10.0, 20.0, 110.0, 140.0))
+
+    def test_every_face_in_the_frame_gets_its_own_box(self) -> None:
+        from src.face_recognizer import FaceState, FrameRecognition
+
+        recognition = FrameRecognition(
+            faces=(
+                self._face(FaceState.MATCHED, (0.0, 0.0, 80.0, 80.0), "Ana", "001"),
+                self._face(FaceState.UNKNOWN, (200.0, 10.0, 300.0, 120.0)),
+                self._face(FaceState.VERIFYING, (320.0, 30.0, 420.0, 150.0)),
+            )
+        )
+
+        overlays = self.page._face_overlays(recognition)
+
+        self.assertEqual(len(overlays), 3)
+        self.assertEqual([overlay.bbox for overlay in overlays][1], (200.0, 10.0, 300.0, 120.0))
+        self.assertEqual(overlays[1].label, "Unknown")
+        self.assertTrue(overlays[2].label.startswith("Verifying"))
+
+    def test_no_face_means_no_boxes(self) -> None:
+        from src.face_recognizer import FrameRecognition
+
+        self.assertEqual(self.page._face_overlays(FrameRecognition()), [])
+
+    def test_stopping_the_camera_removes_the_boxes(self) -> None:
+        from src.gui import widgets
+
+        self.page._video.set_overlays(
+            [widgets.FaceOverlay(bbox=(1.0, 2.0, 3.0, 4.0), label="Ana")]
+        )
+        self.assertEqual(len(self.page._video._overlays), 1)
+
+        self.page.stop()
+
+        self.assertEqual(self.page._video._overlays, ())
+
+    def test_the_video_draws_boxes_over_the_picture(self) -> None:
+        from src.gui import widgets
+
+        view = widgets.VideoView("off")
+        view.resize(400, 300)
+        view.show()
+        self.addCleanup(view.hide)
+        view.set_frame(np.full((120, 160, 3), 30, dtype=np.uint8))
+        self.app.processEvents()
+        plain = view.grab().toImage()
+
+        view.set_overlays(
+            [
+                widgets.FaceOverlay(bbox=(20.0, 30.0, 90.0, 110.0), label="Ana 001 73%"),
+                widgets.FaceOverlay(
+                    bbox=(100.0, 10.0, 150.0, 60.0), label="Unknown", color="#5C70E8"
+                ),
+            ]
+        )
+        self.app.processEvents()
+
+        self.assertNotEqual(plain, view.grab().toImage())
+
+    def test_a_box_in_reverse_order_is_normalised(self) -> None:
+        from src.gui import widgets
+
+        overlay = widgets.FaceOverlay(bbox=(90.0, 110.0, 20.0, 30.0), label="Ana")
+
+        self.assertEqual(overlay.bbox, (20.0, 30.0, 90.0, 110.0))
 
 
 class ResponsiveLayoutTests(unittest.TestCase):

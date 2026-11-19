@@ -481,6 +481,9 @@ class LivenessConfig:
     mode: str = "advisory"
     min_observations: int = 8
     sensitivity: float = 0.5
+    decision_interval_seconds: float = 1.5
+    stability_windows: int = 2
+    observation_window_seconds: float = 3.0
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> LivenessConfig:
@@ -493,6 +496,15 @@ class LivenessConfig:
                 data, "min_observations", 8, path, minimum=2, maximum=60
             ),
             sensitivity=_get_float(data, "sensitivity", 0.5, path, minimum=0.0, maximum=1.0),
+            decision_interval_seconds=_get_float(
+                data, "decision_interval_seconds", 1.5, path, minimum=0.2, maximum=30.0
+            ),
+            stability_windows=_get_int(
+                data, "stability_windows", 2, path, minimum=1, maximum=10
+            ),
+            observation_window_seconds=_get_float(
+                data, "observation_window_seconds", 3.0, path, minimum=0.5, maximum=30.0
+            ),
         )
 
     @property

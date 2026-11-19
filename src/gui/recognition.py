@@ -136,14 +136,13 @@ class RecognitionPage(QWidget):
 
     def _build_match_card(self) -> QWidget:
         card = widgets.Card()
+        self._match_card = card
         card.add(widgets.SectionTitle("Best match"))
 
         heading_row = QHBoxLayout()
         heading_row.setSpacing(8)
-        self._name = QLabel("No face")
+        self._name = widgets.FixedLinesLabel(2, "No face")
         self._name.setObjectName("FaceName")
-        self._name.setWordWrap(True)
-        self._name.setMinimumHeight(26)
         heading_row.addWidget(self._name, 1)
         self._state_badge = widgets.Badge("idle")
         self._state_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -182,9 +181,8 @@ class RecognitionPage(QWidget):
         presentation_holder.setLayout(presentation_row)
         card.add(presentation_holder)
 
-        self._presentation_detail = QLabel("")
+        self._presentation_detail = widgets.FixedLinesLabel(2)
         self._presentation_detail.setObjectName("Hint")
-        self._presentation_detail.setWordWrap(True)
         card.add(self._presentation_detail)
 
         attendance_row = QHBoxLayout()
@@ -202,14 +200,12 @@ class RecognitionPage(QWidget):
         attendance_holder.setLayout(attendance_row)
         card.add(attendance_holder)
 
-        self._reason = QLabel("")
+        self._reason = widgets.FixedLinesLabel(2)
         self._reason.setObjectName("Hint")
-        self._reason.setWordWrap(True)
         card.add(self._reason)
 
-        self._threshold_text = QLabel("")
+        self._threshold_text = widgets.FixedLinesLabel(2)
         self._threshold_text.setObjectName("Hint")
-        self._threshold_text.setWordWrap(True)
         card.add(self._threshold_text)
 
         buttons = QHBoxLayout()
@@ -343,8 +339,37 @@ class RecognitionPage(QWidget):
             return
 
         self._preview.set_caption(self._caption_for(recognition))
+        self._video.set_overlays(self._face_overlays(recognition))
         self._update_match(recognition)
         self._update_stats(recognition)
+
+    def _face_overlays(self, recognition: FrameRecognition) -> list[widgets.FaceOverlay]:
+        """One box per face, named above the box when the face has an identity."""
+        palette = self._context.palette
+        overlays: list[widgets.FaceOverlay] = []
+        for face in recognition.faces:
+            if face.accepted:
+                label = f"{face.display_name}  {face.display_id}  {face.percentage}%"
+                colour = palette.success
+            elif face.state is FaceState.VERIFYING:
+                label = f"Verifying  {face.percentage}%"
+                colour = palette.warning
+            else:
+                label = "Unknown"
+                colour = palette.text_muted
+            overlays.append(
+                widgets.FaceOverlay(
+                    bbox=(
+                        float(face.bbox[0]),
+                        float(face.bbox[1]),
+                        float(face.bbox[2]),
+                        float(face.bbox[3]),
+                    ),
+                    label=label,
+                    color=colour,
+                )
+            )
+        return overlays
 
     def _caption_for(self, recognition: FrameRecognition) -> str:
         parts = [f"{recognition.face_count} face(s)", f"{recognition.inference_ms:.0f} ms"]
@@ -382,7 +407,6 @@ class RecognitionPage(QWidget):
         self._show_presentation(face.presentation, multiple=recognition.face_count > 1)
         self._show_attendance(face.attendance)
         self._reason.setText(face.reason)
-        self._reason.setVisible(bool(face.reason))
 
     def _show_presentation(self, verdict: PresentationVerdict | None, multiple: bool) -> None:
         config = self._context.config.liveness
@@ -408,7 +432,6 @@ class RecognitionPage(QWidget):
     def _set_presentation(self, text: str, tone: str, detail: str) -> None:
         self._restyle("presentation", self._presentation, text, tone)
         self._presentation_detail.setText(detail)
-        self._presentation_detail.setVisible(bool(detail))
 
     def _show_attendance(self, decision: AttendanceDecision | None) -> None:
         if not self._context.config.attendance.enabled:
@@ -471,7 +494,6 @@ class RecognitionPage(QWidget):
         self._set_presentation("Not checked", "ToneMuted", "")
         self._set_attendance("not recorded", "ToneMuted", "")
         self._reason.setText("")
-        self._reason.setVisible(False)
         for label in self._stats_labels.values():
             label.setText("n/a")
 

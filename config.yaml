@@ -143,6 +143,15 @@ liveness:
   min_observations: 8
   # 0.0 is conservative (fewer false alarms), 1.0 flags earlier.
   sensitivity: 0.5
+  # How often the verdict is recomputed. Landmarks are still collected every frame,
+  # so a longer interval costs nothing but a slower first answer, and it is what
+  # stops the label from changing several times a second.
+  decision_interval_seconds: 1.5
+  # Decisions in a row that must agree before the label is allowed to change.
+  stability_windows: 2
+  # Landmarks older than this are ignored, so a pause or a different person in
+  # frame cannot be used as evidence.
+  observation_window_seconds: 3.0
 
 logging:
   # debug | info | warning | error
