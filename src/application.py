@@ -20,6 +20,7 @@ from typing import Any
 
 from config import AppConfig, load_config
 
+from . import execution_providers
 from .attendance import AttendanceService
 from .camera import Camera, probe_cameras
 from .crypto import FieldCipher, passphrase_from_environment
@@ -242,6 +243,20 @@ class Application:
     def probe_cameras(max_index: int = 4) -> list[int]:
         return probe_cameras(max_index=max_index)
 
+    def describe_compute(self) -> str:
+        """Which backend the models will run on, and what else is installed."""
+        requested = self._config.model.providers
+        if self._detector is not None and self._detector.is_loaded:
+            return f"{execution_providers.describe(self._detector.providers)} (loaded)"
+        chosen, available = execution_providers.plan(requested)
+        if not chosen:
+            return "CPU only (onnxruntime reports no provider)"
+        installed = [name for name in available if name != "AzureExecutionProvider"]
+        return (
+            f"{execution_providers.describe(chosen)} available in this onnxruntime build "
+            f"({', '.join(sorted(installed))})"
+        )
+
     def describe_environment(self) -> Sequence[str]:
         """Human-readable summary for the status view and the CLI."""
         lines = [
@@ -250,6 +265,7 @@ class Application:
             f"Executable        {sys.executable}",
             f"Hardware          {self._hardware.summary}",
             f"Performance       {describe_profile(self._tier, self._hardware)}",
+            f"Compute           {self.describe_compute()}",
             f"Configuration     {self._config.source_path}",
             f"Settings          {self._settings.path}"
             + ("" if self._settings.path.is_file() else " (not created yet)"),

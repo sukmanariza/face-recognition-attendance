@@ -80,11 +80,33 @@ def install_requirements() -> bool:
         return False
     print(f"{STEP_OK} Upgrading pip")
     run_pip(["install", "--upgrade", "pip", "--quiet"])
+    drop_conflicting_runtime()
     print(f"{STEP_OK} Installing dependencies (this downloads about 200 MB once)")
     if not run_pip(["install", "-r", str(REQUIREMENTS_FILE)]):
         print(f"{STEP_FAIL} Dependency installation failed. Re-run this script to retry.")
         return False
     return True
+
+
+def drop_conflicting_runtime() -> None:
+    """Remove the other onnxruntime build before installing this platform's one.
+
+    Every onnxruntime build installs the same ``onnxruntime`` package directory, so
+    having two of them at once leaves a mix of files that fails in strange ways.
+    """
+    wanted = "onnxruntime-directml" if sys.platform == "win32" else "onnxruntime"
+    other = "onnxruntime" if sys.platform == "win32" else "onnxruntime-directml"
+    installed = subprocess.run(
+        [str(venv_python()), "-m", "pip", "show", "--name-only", other],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if installed.returncode != 0:
+        return
+    print(f"{STEP_OK} Removing {other} so {wanted} can provide the onnxruntime module")
+    run_pip(["uninstall", "-y", other, "--quiet"])
 
 
 def download_model() -> bool:

@@ -31,6 +31,7 @@ import numpy as np
 
 from config import ModelConfig
 
+from . import execution_providers
 from .metrics import RateCounter, StageTimings
 from .similarity import normalize_embedding
 
@@ -345,29 +346,27 @@ class FaceDetector:
         )
 
     def _select_providers(self) -> list[str]:
-        import onnxruntime
-
-        try:
-            available = set(onnxruntime.get_available_providers())
-        except Exception as exc:
-            raise ModelLoadError(f"onnxruntime is not usable: {exc}") from exc
-
-        usable = [provider for provider in self._config.providers if provider in available]
-        for provider in self._config.providers:
-            if provider not in available:
-                logger.warning(
-                    "Provider '%s' is not available in this onnxruntime build (%s); skipping it.",
-                    provider,
-                    ", ".join(sorted(available)),
-                )
+        """Providers for the session, chosen from what this build can actually run."""
+        available = execution_providers.available_providers()
+        if not available:
+            raise ModelLoadError(
+                "onnxruntime is not usable: it either failed to import or reports no "
+                "execution provider. Reinstall it with `pip install onnxruntime` "
+                "(or onnxruntime-directml for an AMD or Intel GPU on Windows)."
+            )
+        usable = execution_providers.resolve(self._config.providers, available)
         if not usable:
-            if "CPUExecutionProvider" not in available:
-                raise ModelLoadError(
-                    "onnxruntime provides no CPUExecutionProvider; reinstall it with "
-                    "`pip install --force-reinstall onnxruntime`."
-                )
-            logger.warning("No requested provider is available; using CPUExecutionProvider.")
-            usable = ["CPUExecutionProvider"]
+            raise ModelLoadError(
+                f"onnxruntime provides no usable execution provider (available: "
+                f"{', '.join(sorted(available))}). Reinstall it with "
+                "`pip install --force-reinstall onnxruntime`."
+            )
+        logger.info(
+            "Execution provider: %s (requested %s, available %s)",
+            execution_providers.describe(usable),
+            list(self._config.providers),
+            sorted(available),
+        )
         return usable
 
     @staticmethod
@@ -375,8 +374,12 @@ class FaceDetector:
         # ctx_id = -1 means CPU in the InsightFace API; a GPU device uses 0.
         return -1 if providers and providers[0] == "CPUExecutionProvider" else 0
 
-    def _build_session_options(self) -> object:
-        """ONNX Runtime graph optimisation and thread settings."""
+    def _build_session_options(self, providers: Sequence[str]) -> object:
+        """ONNX Runtime graph optimisation and thread settings.
+
+        DirectML (and TensorRT) refuse to build a session with memory patterns or
+        parallel execution enabled, so the options follow the chosen provider.
+        """
         import onnxruntime
 
         options = onnxruntime.SessionOptions()
@@ -392,8 +395,11 @@ class FaceDetector:
         if self._config.inter_op_threads > 0:
             options.inter_op_num_threads = self._config.inter_op_threads
         options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
+        if execution_providers.needs_serial_execution(providers):
+            options.enable_mem_pattern = False
         logger.info(
-            "ONNX Runtime: graph_optimization=%s, intra_op=%s, inter_op=%s",
+            "ONNX Runtime: %s, graph_optimization=%s, intra_op=%s, inter_op=%s",
+            execution_providers.describe(providers),
             self._config.graph_optimization,
             self._config.intra_op_threads or "auto",
             self._config.inter_op_threads or "auto",
@@ -422,23 +428,19 @@ class FaceDetector:
         providers = self._select_providers()
 
         try:
-            analysis = FaceAnalysis(
-                name=str(model_dir),
-                allowed_modules=["detection", "recognition"],
-                providers=providers,
-                sess_options=self._build_session_options(),
+            analysis = self._build_analysis(FaceAnalysis, model_dir, providers)
+        except ModelLoadError as exc:
+            if not execution_providers.is_gpu(providers):
+                raise
+            # A missing driver, an unsupported operator, or too little video memory
+            # must degrade to the CPU instead of leaving the app without a model.
+            logger.warning(
+                "GPU inference (%s) failed: %s. Retrying on the CPU.",
+                execution_providers.describe(providers),
+                exc,
             )
-            analysis.prepare(
-                ctx_id=self._ctx_id(providers),
-                det_thresh=self._config.det_thresh,
-                det_size=tuple(self._config.det_size),
-            )
-        except Exception as exc:
-            raise ModelLoadError(
-                f"InsightFace model failed to load from {model_dir}: {exc}. "
-                "Check that the .onnx files are complete (det_500m.onnx and w600k_mbf.onnx "
-                "for buffalo_s; det_10g.onnx and w600k_r50.onnx for buffalo_l)."
-            ) from exc
+            providers = [execution_providers.CPU_PROVIDER]
+            analysis = self._build_analysis(FaceAnalysis, model_dir, providers)
 
         models = getattr(analysis, "models", {})
         if "detection" not in models or "recognition" not in models:
@@ -461,6 +463,30 @@ class FaceDetector:
 
         if self._config.warmup:
             self.warmup()
+
+    def _build_analysis(
+        self, factory: object, model_dir: Path, providers: Sequence[str]
+    ) -> object:
+        """Create the InsightFace analysis object for one provider list."""
+        try:
+            analysis = factory(  # type: ignore[operator]
+                name=str(model_dir),
+                allowed_modules=["detection", "recognition"],
+                providers=list(providers),
+                sess_options=self._build_session_options(providers),
+            )
+            analysis.prepare(  # type: ignore[attr-defined]
+                ctx_id=self._ctx_id(providers),
+                det_thresh=self._config.det_thresh,
+                det_size=tuple(self._config.det_size),
+            )
+        except Exception as exc:
+            raise ModelLoadError(
+                f"InsightFace model failed to load from {model_dir}: {exc}. "
+                "Check that the .onnx files are complete (det_500m.onnx and w600k_mbf.onnx "
+                "for buffalo_s; det_10g.onnx and w600k_r50.onnx for buffalo_l)."
+            ) from exc
+        return analysis
 
     def _require_loaded(self) -> object:
         if self._analysis is None:

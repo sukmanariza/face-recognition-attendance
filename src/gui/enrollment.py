@@ -12,14 +12,14 @@ seconds and would otherwise freeze the window.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QBoxLayout,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QProgressBar,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -37,6 +37,12 @@ from src.presentation import PresentationVerdict
 
 from . import widgets
 from .context import AppContext
+from .preview import PreviewPainter
+
+# Below this width the camera and the form stack instead of sitting side by side.
+_STACK_BELOW_WIDTH = 700
+_UNLIMITED = 16_777_215
+_STACKED_VIDEO_HEIGHT = 220
 
 
 class EnrollmentPage(QWidget):
@@ -56,7 +62,9 @@ class EnrollmentPage(QWidget):
         self._update_id: str | None = None
         self._ready_to_save = False
         self._capturing = False
-
+        self._marked_stage = -1
+        self._video = widgets.VideoView("Press Prepare to start the camera")
+        self._preview = PreviewPainter(self._video)
         self._timer = QTimer(self)
         self._timer.setInterval(8)
         self._timer.timeout.connect(self._tick)
@@ -68,7 +76,7 @@ class EnrollmentPage(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 22, 24, 22)
-        root.setSpacing(16)
+        root.setSpacing(12)
 
         root.addWidget(
             widgets.PageHeader(
@@ -78,18 +86,20 @@ class EnrollmentPage(QWidget):
             )
         )
 
-        body = QHBoxLayout()
-        body.setSpacing(16)
+        self._body = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self._body.setSpacing(16)
 
         left = QVBoxLayout()
         left.setSpacing(10)
-        self._video = widgets.VideoView("Press Prepare to start the camera")
+        left.setContentsMargins(0, 0, 0, 0)
+        self._video.setMinimumSize(QSize(280, 150))
         left.addWidget(self._video, 1)
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 100)
         self._progress.setValue(0)
         self._progress.setTextVisible(False)
+        self._progress.setFixedHeight(8)
         left.addWidget(self._progress)
 
         self._prompt = QLabel("Waiting to start.")
@@ -104,29 +114,52 @@ class EnrollmentPage(QWidget):
 
         left_holder = QWidget()
         left_holder.setLayout(left)
-        body.addWidget(left_holder, 3)
+        self._body.addWidget(left_holder, 3)
 
         right = QVBoxLayout()
         right.setSpacing(12)
+        right.setContentsMargins(0, 0, 0, 0)
         right.addWidget(self._build_form())
         right.addWidget(self._build_stages())
         right.addWidget(self._build_checklist())
         right.addStretch(1)
         right_holder = QWidget()
         right_holder.setLayout(right)
+        right_holder.setMinimumWidth(300)
 
-        panel = QScrollArea()
-        panel.setWidgetResizable(True)
-        panel.setWidget(right_holder)
-        panel.setMinimumWidth(360)
-        panel.setMaximumWidth(460)
-        panel.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        body.addWidget(panel, 2)
+        self._panel = widgets.scroll_area(right_holder, min_width=300, max_width=470)
+        self._body.addWidget(self._panel, 2)
 
-        root.addLayout(body, 1)
+        root.addLayout(self._body, 1)
 
         self._banner = widgets.Banner()
         root.addWidget(self._banner)
+        self._apply_layout()
+
+    def _apply_layout(self) -> None:
+        """Stack the camera above the form when the window is too narrow."""
+        narrow = self.width() < _STACK_BELOW_WIDTH
+        direction = (
+            QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
+        )
+        if self._body.direction() != direction:
+            self._body.setDirection(direction)
+        if narrow:
+            self._body.setStretch(0, 0)
+            self._body.setStretch(1, 1)
+            self._video.setMaximumHeight(_STACKED_VIDEO_HEIGHT)
+            self._panel.setMinimumHeight(0)
+            self._panel.setMaximumHeight(_UNLIMITED)
+        else:
+            self._body.setStretch(0, 3)
+            self._body.setStretch(1, 2)
+            self._video.setMaximumHeight(_UNLIMITED)
+            self._panel.setMinimumHeight(0)
+            self._panel.setMaximumHeight(_UNLIMITED)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_layout()
 
     def _build_form(self) -> QWidget:
         card = widgets.Card()
@@ -230,6 +263,7 @@ class EnrollmentPage(QWidget):
         self._reset_stage_marks()
 
     def _reset_stage_marks(self) -> None:
+        self._marked_stage = -1
         plan = build_plan(self._context.config.registration)
         for index, (stage, label) in enumerate(zip(plan, self._stage_labels, strict=False)):
             label.setText(f"○  {index + 1}. {stage.title}")
@@ -238,6 +272,9 @@ class EnrollmentPage(QWidget):
             label.style().polish(label)
 
     def _mark_stage(self, collected: int) -> None:
+        if collected == self._marked_stage:
+            return
+        self._marked_stage = collected
         plan = build_plan(self._context.config.registration)
         for index, (stage, label) in enumerate(zip(plan, self._stage_labels, strict=False)):
             if index < collected:
@@ -400,6 +437,7 @@ class EnrollmentPage(QWidget):
             self._pipeline = None
         self._pump = None
         self._video.clear_frame("Press Prepare to start the camera")
+        self._preview.reset()
 
     def shutdown(self) -> None:
         """Release the camera and the worker; called when the window closes."""
@@ -409,19 +447,24 @@ class EnrollmentPage(QWidget):
             self._worker.wait(3000)
         self._worker = None
 
+
     def _tick(self) -> None:
-        if self._pump is None:
+        if self._pump is None or self._pipeline is None:
             return
+        # The preview follows the camera; the enrollment result arrives whenever the
+        # session is due, and only the text depends on it.
+        self._preview.paint(self._pipeline)
+
         output = self._pump.poll()
         if output is None:
             return
         attempt = output.attempt
         if attempt is None:
-            self._video.set_frame(output.frame.image)
             return
 
-        caption = f"{attempt.collected}/{attempt.required}  {attempt.status.value}"
-        self._video.set_frame(output.frame.image, caption=caption)
+        self._preview.set_caption(
+            f"{attempt.collected}/{attempt.required}  {attempt.status.value}"
+        )
         self._progress.setValue(int(attempt.progress * 100))
         self._mark_stage(attempt.collected)
 

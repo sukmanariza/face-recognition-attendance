@@ -2,7 +2,11 @@
 # Verified on Windows 11 with Python 3.14.2, CPU only, and on Linux (aarch64/x86_64).
 
 insightface==2.1
-onnxruntime==1.31.1
+# Windows: the DirectML build runs the models on any DirectX 12 GPU (AMD, Intel,
+# NVIDIA), which is the only way to use an AMD or Intel integrated GPU. Other
+# platforms keep the CPU build. Both provide the same `onnxruntime` module.
+onnxruntime-directml==1.24.4; sys_platform == "win32"
+onnxruntime==1.31.1; sys_platform != "win32"
 opencv-python==5.1.0.95
 numpy==2.5.5
 PyYAML==6.0.3
@@ -13,9 +17,11 @@ cryptography==50.0.2
 # -----
 # * insightface 2.1 ships as a pure-Python wheel (py3-none-any), so no C++ build
 #   tools are needed. insightface 0.7.x does need them; do not downgrade.
-# * onnxruntime has wheels for CPython 3.10-3.14. For an NVIDIA GPU, install
-#   onnxruntime-gpu that matches your CUDA version and add the CUDA provider to
-#   model.providers in config.yaml.
+# * onnxruntime has wheels for CPython 3.10-3.14. Windows installs the DirectML
+#   build so an AMD or Intel GPU is used instead of sitting idle; the CPU build is
+#   the fallback there and the default elsewhere. For an NVIDIA card with CUDA,
+#   replace it with onnxruntime-gpu (see TECHNICAL.md, "GPU acceleration").
+#   `python main.py providers` measures both on your machine.
 # * opencv-python (not opencv-contrib-python): only the core and HighGUI modules
 #   are used, and the contrib build is roughly twice the download size.
 # * PySide6-Essentials contains QtCore/QtGui/QtWidgets, which is all the interface

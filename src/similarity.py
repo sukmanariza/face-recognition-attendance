@@ -70,7 +70,7 @@ def to_percentage(similarity: float) -> int:
     """Map a similarity in [-1, 1] to a 0-100 integer for display.
 
     Similarity is not a probability. Showing it as a percentage is a readability
-    convention; the README states this explicitly so the number is not misread.
+    convention; the documentation states this explicitly so the number is not misread.
     """
     return round(float(np.clip(similarity, 0.0, 1.0)) * 100.0)
 

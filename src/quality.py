@@ -5,7 +5,7 @@ from a blurred, dark, or turned-away face produces misleading similarity scores
 for as long as that identity exists.
 
 Thresholds depend on camera, lighting, and sitting distance. Defaults are a
-starting point, not universal constants; the README explains how to calibrate.
+starting point, not universal constants; TECHNICAL.md explains how to calibrate.
 """
 
 from __future__ import annotations

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 import unittest
 
@@ -185,6 +186,77 @@ class DisplayPumpTests(unittest.TestCase):
         self.addCleanup(pipeline.close)
         pump = DisplayPump(pipeline)
         self.assertIsNone(pump.poll())
+
+
+class SkippedSequenceTests(unittest.TestCase):
+    """The camera numbers skipped frames, and that must not park the inference thread.
+
+    ``Camera.read`` returns the frame after the newest one it saw, so sequences jump.
+    Waiting for a newer value has to use the handoff slot's own counter: comparing it
+    with a frame number stalls the loop and turns a 14 fps preview into 2 fps.
+    """
+
+    class _Session:
+        def __init__(self) -> None:
+            self.count = 0
+            self.done = threading.Event()
+
+        def submit_frame(self, frame, /):
+            self.count += 1
+            if self.count >= 20:
+                self.done.set()
+            return SampleAttempt(
+                status=SampleStatus.WAITING,
+                message="hold still",
+                collected=0,
+                required=5,
+                prompt="Front",
+            )
+
+    def setUp(self) -> None:
+        from src.pipeline import InferenceThread
+
+        self.frames = LatestValue()
+        self.outputs = LatestValue()
+        self.thread = InferenceThread(self.frames, self.outputs, load_config())
+        self.session = self._Session()
+        self.thread.set_registration_session(self.session)  # type: ignore[arg-type]
+        self.thread.set_mode(Mode.REGISTER)
+        self.image = np.zeros((32, 32, 3), dtype=np.uint8)
+
+    def _start_thread(self) -> None:
+        self.thread.start()
+
+    def tearDown(self) -> None:
+        self.thread.stop()
+        self.thread.join(timeout=1.0)
+        self.frames.close()
+        self.outputs.close()
+
+    def test_a_gap_in_frame_numbers_does_not_stall_processing(self) -> None:
+        self._start_thread()
+        for index in range(1, 21):
+            self.frames.set(Frame(image=self.image, sequence=index * 5))
+            time.sleep(0.01)
+            if self.session.done.is_set():
+                break
+        self.assertTrue(
+            self.session.done.wait(5.0),
+            f"only {self.session.count} of 20 frames were processed",
+        )
+
+    def test_skipped_frame_numbers_are_counted_as_dropped(self) -> None:
+        self._start_thread()
+        for sequence in (1, 4, 7, 10):
+            before = self.session.count
+            self.frames.set(Frame(image=self.image, sequence=sequence))
+            deadline = time.monotonic() + 3.0
+            while self.session.count == before and time.monotonic() < deadline:
+                time.sleep(0.005)
+            self.assertEqual(self.session.count, before + 1, "frame was not picked up in time")
+        # Two frames are missing between each pair: 4-1-1, then 7-4-1 and 10-7-1.
+        self.assertEqual(self.thread.dropped_frames, 6)
+
 
 
 class RegistrationDispatchTests(unittest.TestCase):

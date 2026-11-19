@@ -47,6 +47,19 @@ class RepositoryHygieneTests(unittest.TestCase):
         self.assertIn("not certification", readme)
         self.assertIn("not a probability", readme)
 
+    def test_the_technical_document_is_linked_from_the_readme(self) -> None:
+        """The README stays short, so the depth lives in a file it must point at."""
+        technical = PROJECT_ROOT / "TECHNICAL.md"
+        self.assertTrue(technical.is_file(), "TECHNICAL.md is missing")
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("TECHNICAL.md", readme)
+        self.assertGreater(len(technical.read_text(encoding="utf-8")), 5000)
+
+    def test_the_readme_stays_short(self) -> None:
+        readme = PROJECT_ROOT / "README.md"
+        lines = readme.read_text(encoding="utf-8").splitlines()
+        self.assertLess(len(lines), 250, "the README is meant to stay a short overview")
+
     def test_every_source_module_has_a_docstring(self) -> None:
         for path in (PROJECT_ROOT / "src").rglob("*.py"):
             if path.name == "__init__.py":

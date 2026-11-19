@@ -12,6 +12,7 @@
     python main.py audit           recent changes made through the app
     python main.py status          environment, model and database summary
     python main.py benchmark       measure performance and write a JSON report
+    python main.py providers       compare CPU and GPU execution providers
     python main.py settings        show the effective configuration
 
 Every command loads `config.yaml`, then the hardware performance tier, then
@@ -357,7 +358,6 @@ def command_register(args: argparse.Namespace) -> int:
 
 def command_benchmark(args: argparse.Namespace) -> int:
     from src.benchmark import run_benchmark
-
     application = _load_application(args)
     try:
         print("Benchmarking the live pipeline. Keep the camera pointed at a face.")
@@ -373,6 +373,28 @@ def command_benchmark(args: argparse.Namespace) -> int:
         print(f"Report written to {path}")
     except Exception as exc:  # noqa: BLE001 - CLI must print, never traceback-dump
         LOGGER.error("Benchmark failed: %s", exc)
+        return 1
+    finally:
+        application.close()
+    return 0
+
+
+def command_providers(args: argparse.Namespace) -> int:
+    from src.benchmark import compare_providers, describe_provider_comparison
+
+    application = _load_application(args)
+    try:
+        print(f"Compute: {application.describe_compute()}")
+        print("Timing detection and embedding per execution provider (no camera needed).")
+        timings = compare_providers(
+            application,
+            frames=args.frames,
+            providers=args.provider,
+            det_size=args.det_size,
+        )
+        print(describe_provider_comparison(timings))
+    except Exception as exc:  # noqa: BLE001 - CLI must print, never traceback-dump
+        LOGGER.error("Provider comparison failed: %s", exc)
         return 1
     finally:
         application.close()
@@ -436,6 +458,25 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--duration", type=float, default=None, help="measured seconds")
     benchmark.add_argument("--warmup", type=float, default=None, help="warmup seconds")
 
+    providers = subparsers.add_parser(
+        "providers", help="compare CPU and GPU execution providers"
+    )
+    providers.add_argument(
+        "--frames", type=int, default=15, help="frames timed per provider (default 15)"
+    )
+    providers.add_argument(
+        "--provider",
+        action="append",
+        default=None,
+        help="limit the comparison to one provider name (repeatable)",
+    )
+    providers.add_argument(
+        "--det-size",
+        type=int,
+        default=None,
+        help="override model.det_size for the comparison (e.g. 480)",
+    )
+
     return parser
 
 
@@ -453,6 +494,7 @@ _HANDLERS = {
     "recognize": command_recognize,
     "register": command_register,
     "benchmark": command_benchmark,
+    "providers": command_providers,
 }
 
 

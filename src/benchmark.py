@@ -15,14 +15,16 @@ import json
 import logging
 import statistics
 import time
-from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 
+from . import execution_providers
 from .application import Application
+from .face_detector import DetectedFace, FaceDetector
 from .pipeline import CameraSource, Mode, RecognitionPipeline
 from .sysmetrics import SystemMetrics
 
@@ -216,3 +218,149 @@ def run_benchmark(
         model=model_description,
         samples=tuple(samples),
     )
+
+
+@dataclass(frozen=True)
+class ProviderTiming:
+    """Measured cost of one execution provider on this machine."""
+
+    provider: str
+    device: str
+    detect_ms: float
+    embed_ms: float
+    frames: int
+    error: str = ""
+
+    @property
+    def total_ms(self) -> float:
+        """Detection plus embedding for one face."""
+        return self.detect_ms + self.embed_ms
+
+    def describe(self) -> str:
+        if self.error:
+            return f"{self.provider:<26} {self.device:<4} failed: {self.error}"
+        return (
+            f"{self.provider:<26} {self.device:<4} detect {self.detect_ms:7.2f} ms  "
+            f"embed {self.embed_ms:7.2f} ms  per face {self.total_ms:7.2f} ms"
+        )
+
+
+def _synthetic_scene(width: int = 640, height: int = 480) -> np.ndarray:
+    """A deterministic frame with texture, so detection does real convolution work."""
+    rows = np.linspace(0, 255, height, dtype=np.float32)[:, None]
+    columns = np.linspace(0, 255, width, dtype=np.float32)[None, :]
+    frame = np.empty((height, width, 3), dtype=np.float32)
+    frame[..., 0] = (rows + columns) * 0.5
+    frame[..., 1] = rows
+    frame[..., 2] = columns
+    noise = np.random.default_rng(7).integers(0, 24, size=(height, width, 3), dtype=np.uint8)
+    return (np.clip(frame, 0, 255).astype(np.uint8) + noise).astype(np.uint8)
+
+
+def _synthetic_face(width: int, height: int) -> DetectedFace:
+    """A face-shaped box with the five landmarks the aligner needs."""
+    left, top = width * 0.35, height * 0.25
+    right, bottom = width * 0.65, height * 0.75
+    span_x, span_y = right - left, bottom - top
+    landmarks = np.array(
+        [
+            [left + span_x * 0.30, top + span_y * 0.38],
+            [left + span_x * 0.70, top + span_y * 0.38],
+            [left + span_x * 0.50, top + span_y * 0.55],
+            [left + span_x * 0.35, top + span_y * 0.75],
+            [left + span_x * 0.65, top + span_y * 0.75],
+        ],
+        dtype=np.float32,
+    )
+    return DetectedFace(
+        bbox=np.array([left, top, right, bottom], dtype=np.float32),
+        det_score=0.9,
+        landmarks=landmarks,
+    )
+
+
+def compare_providers(
+    application: Application,
+    *,
+    frames: int = 15,
+    providers: Sequence[str] | None = None,
+    det_size: int | None = None,
+) -> tuple[ProviderTiming, ...]:
+    """Time detection and embedding on every provider this build offers.
+
+    Runs on a synthetic frame, so no camera and no face are needed. The point is a
+    decision backed by numbers: a small model on a slow integrated GPU can lose to
+    the CPU, and only the actual machine can answer that.
+    """
+    present = execution_providers.available_providers()
+    candidates = list(providers or [])
+    if not candidates:
+        candidates = [name for name in execution_providers.PREFERENCE if name in present]
+    frame = _synthetic_scene()
+    height, width = frame.shape[:2]
+    model = application.config.model
+    if det_size is not None:
+        model = replace(model, det_size=(det_size, det_size))
+    timings: list[ProviderTiming] = []
+
+    for name in candidates:
+        device = "GPU" if name in execution_providers.GPU_PROVIDERS else "CPU"
+        detector = FaceDetector(
+            replace(model, providers=(name,), warmup=False),
+            application.config.model_dir,
+        )
+        try:
+            detector.load()
+            detector.detect(frame, max_faces=1)  # first call builds the kernels
+            detection: list[float] = []
+            embedding: list[float] = []
+            for _ in range(max(1, frames)):
+                started = time.perf_counter()
+                detector.detect(frame, max_faces=1)
+                detection.append((time.perf_counter() - started) * 1000.0)
+                started = time.perf_counter()
+                detector.embed(frame, [_synthetic_face(width, height)])
+                embedding.append((time.perf_counter() - started) * 1000.0)
+            timings.append(
+                ProviderTiming(
+                    provider=name,
+                    device=device,
+                    detect_ms=round(statistics.median(detection), 2),
+                    embed_ms=round(statistics.median(embedding), 2),
+                    frames=len(detection),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - one provider must not abort the run
+            timings.append(
+                ProviderTiming(
+                    provider=name,
+                    device=device,
+                    detect_ms=0.0,
+                    embed_ms=0.0,
+                    frames=0,
+                    error=str(exc),
+                )
+            )
+        finally:
+            detector.close()
+    return tuple(timings)
+
+
+def describe_provider_comparison(timings: Sequence[ProviderTiming]) -> str:
+    """Console table plus the winner, so the choice is not a guess."""
+    if not timings:
+        return "No execution provider to compare."
+    lines = ["Execution provider comparison (median per frame, lower is better)"]
+    lines.extend(f"  {timing.describe()}" for timing in timings)
+    working = [timing for timing in timings if not timing.error]
+    if working:
+        fastest = min(working, key=lambda timing: timing.total_ms)
+        lines.append(
+            f"  fastest: {fastest.provider} at {fastest.total_ms:.2f} ms per face "
+            f"({fastest.frames} frames)"
+        )
+    lines.append(
+        "  Set model.providers in config.yaml to pin a provider; [auto] takes the "
+        "fastest backend the installed onnxruntime build provides."
+    )
+    return "\n".join(lines)

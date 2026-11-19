@@ -15,7 +15,7 @@ about:
   somebody in.
 
 The clock is the machine's clock. This is a local system: if the workstation clock is
-wrong, the attendance is wrong, and the README says so instead of pretending
+wrong, the attendance is wrong, and the documentation says so instead of pretending
 otherwise.
 """
 

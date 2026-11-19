@@ -16,10 +16,12 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QDate
+import numpy as np
+from PySide6.QtCore import QDate, QRect
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from config import load_config
+from src.camera import Frame
 
 FORBIDDEN_HEX = {
     "#22d3ee",  # cyan
@@ -181,6 +183,42 @@ class PageTests(unittest.TestCase):
         page = self.window.recognition_page
         text = " ".join(self._texts(page))
         self.assertIn("45%", text)
+
+    def test_the_idle_readout_is_not_repainted_on_every_frame(self) -> None:
+        """The page sees 10 to 30 results per second; identical text must be free."""
+        self.window.navigate("recognition")
+        page = self.window.recognition_page
+        page._reset_readout()
+
+        spy = mock.Mock()
+        page._name.setText = spy
+        page._reset_readout()
+
+        spy.assert_not_called()
+
+    def test_the_badge_is_only_restyled_when_it_changes(self) -> None:
+        self.window.navigate("recognition")
+        page = self.window.recognition_page
+        page._set_badge("matched", "BadgeAccent")
+
+        spy = mock.Mock()
+        page._state_badge.setText = spy
+        page._set_badge("matched", "BadgeAccent")
+        spy.assert_not_called()
+
+        page._set_badge("no match", "Badge")
+        spy.assert_called_once_with("no match")
+
+    def test_enrollment_stage_marks_are_written_once(self) -> None:
+        self.window.navigate("enrollment")
+        page = self.window.enrollment_page
+        page._mark_stage(2)
+
+        spy = mock.Mock()
+        page._stage_labels[0].setText = spy
+        page._mark_stage(2)
+
+        spy.assert_not_called()
 
     def test_settings_are_written_to_disk(self) -> None:
         self.window.navigate("settings")
@@ -428,6 +466,185 @@ class EnrollmentNameTests(unittest.TestCase):
             self.window.navigate("home")
         self.assertEqual(self.window._current_key, "home")
         self.assertFalse(self.page.has_unsaved_capture())
+
+
+class ResponsiveLayoutTests(unittest.TestCase):
+    """The window has to fit small screens and reflow instead of clipping."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        existing = QApplication.instance()
+        cls.app = existing if isinstance(existing, QApplication) else QApplication([])
+        cls._directory = tempfile.TemporaryDirectory()
+        base = load_config()
+        cls.config = base.replace(source_path=Path(cls._directory.name) / "config.yaml")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._directory.cleanup()
+
+    def setUp(self) -> None:
+        from src.application import Application
+        from src.gui import MainWindow
+
+        self.application = Application(self.config)
+        self.window = MainWindow(self.application)
+        # Shown on purpose: Qt only runs a layout pass for visible widgets, and
+        # these tests are about what the layout does when the window is resized.
+        self.window.show()
+        self.addCleanup(self.window.hide)
+        self.addCleanup(self.window.shutdown)
+
+    def _available(self) -> QRect:
+        screen = self.app.primaryScreen()
+        self.assertIsNotNone(screen)
+        return screen.availableGeometry()
+
+    def test_requested_sizes_fit_the_screen(self) -> None:
+        from src.gui.app import _initial_size, _minimum_size
+
+        available = self._available()
+        width, height = _initial_size(self.window)
+        minimum_width, minimum_height = _minimum_size()
+
+        self.assertLessEqual(width, available.width())
+        self.assertLessEqual(height, available.height())
+        self.assertLessEqual(minimum_width, width)
+        self.assertLessEqual(minimum_height, height)
+        self.assertLessEqual(minimum_width, available.width())
+        self.assertLessEqual(minimum_height, available.height())
+        self.assertGreaterEqual(minimum_width, 320)
+        self.assertGreaterEqual(minimum_height, 240)
+
+    def test_every_page_fits_a_short_window(self) -> None:
+        for key in ("home", "recognition", "enrollment", "attendance", "users", "settings"):
+            with self.subTest(page=key):
+                self.window.navigate(key)
+                self.app.processEvents()
+                page = self.window._pages[key]
+                self.assertLessEqual(page.minimumSizeHint().height(), 560)
+
+    def test_recognition_page_stacks_on_a_narrow_window(self) -> None:
+        from PySide6.QtWidgets import QBoxLayout
+
+        self.window.navigate("recognition")
+        page = self.window.recognition_page
+
+        self.window.resize(780, 560)
+        self.app.processEvents()
+        self.assertEqual(page._body.direction(), QBoxLayout.Direction.TopToBottom)
+        self.assertLessEqual(page._video.maximumHeight(), 400)
+
+        self.window.resize(1300, 720)
+        self.app.processEvents()
+        self.assertEqual(page._body.direction(), QBoxLayout.Direction.LeftToRight)
+
+    def test_enrollment_page_stacks_on_a_narrow_window(self) -> None:
+        from PySide6.QtWidgets import QBoxLayout
+
+        self.window.navigate("enrollment")
+        page = self.window.enrollment_page
+
+        self.window.resize(780, 560)
+        self.app.processEvents()
+        self.assertEqual(page._body.direction(), QBoxLayout.Direction.TopToBottom)
+
+        self.window.resize(1000, 720)
+        self.app.processEvents()
+        self.assertEqual(page._body.direction(), QBoxLayout.Direction.LeftToRight)
+
+    def test_toolbars_stay_on_one_row_at_normal_sizes(self) -> None:
+        from PySide6.QtWidgets import QBoxLayout
+
+        self.window.navigate("attendance")
+        self.window.resize(1000, 620)
+        self.app.processEvents()
+        self.assertEqual(
+            self.window.attendance_page._toolbar.direction(),
+            QBoxLayout.Direction.LeftToRight,
+        )
+        self.window.resize(780, 560)
+        self.app.processEvents()
+        self.assertEqual(
+            self.window.attendance_page._toolbar.direction(),
+            QBoxLayout.Direction.TopToBottom,
+        )
+
+        self.window.navigate("users")
+        self.window.resize(1000, 620)
+        self.app.processEvents()
+        self.assertEqual(
+            self.window.users_page._actions.direction(), QBoxLayout.Direction.LeftToRight
+        )
+
+    def test_home_tiles_reduce_their_column_count(self) -> None:
+        self.window.navigate("home")
+        page = self.window.home_page
+
+        for width, columns in ((1500, 4), (1000, 2), (780, 1)):
+            with self.subTest(width=width):
+                self.window.resize(width, 680)
+                self.app.processEvents()
+                # Real geometry, not columnCount(): QGridLayout keeps the widest
+                # grid it has ever used until it is rebuilt.
+                tiles = [tile for tile in page._tiles if tile.isVisible()]
+                top = tiles[0].y()
+                self.assertEqual(len([tile for tile in tiles if tile.y() == top]), columns)
+
+    def test_buttons_keep_a_readable_height(self) -> None:
+        self.window.navigate("recognition")
+        page = self.window.recognition_page
+        self.window.resize(780, 560)
+        self.app.processEvents()
+
+        for button in (page._start_button, page._stop_button):
+            self.assertGreaterEqual(button.minimumHeight(), 28)
+            self.assertGreaterEqual(button.height(), 28)
+
+
+class PreviewPainterTests(unittest.TestCase):
+    """The preview follows the camera, so each frame is painted exactly once."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        existing = QApplication.instance()
+        cls.app = existing if isinstance(existing, QApplication) else QApplication([])
+
+    def setUp(self) -> None:
+        from src.gui.preview import PreviewPainter
+        from src.gui.widgets import VideoView
+
+        self.video = VideoView("off")
+        self.painter = PreviewPainter(self.video)
+        self.pipeline = mock.Mock()
+        self.pipeline.latest_frame.return_value = Frame(
+            np.zeros((8, 8, 3), dtype=np.uint8), 4
+        )
+
+    def test_a_frame_is_painted_once(self) -> None:
+        self.assertTrue(self.painter.paint(self.pipeline))
+        self.assertFalse(self.painter.paint(self.pipeline))
+        self.assertEqual(self.pipeline.note_displayed.call_count, 1)
+
+    def test_a_new_frame_is_painted_again(self) -> None:
+        self.painter.paint(self.pipeline)
+        self.pipeline.latest_frame.return_value = Frame(
+            np.zeros((8, 8, 3), dtype=np.uint8), 5
+        )
+        self.assertTrue(self.painter.paint(self.pipeline))
+
+    def test_the_caption_of_the_last_result_is_drawn(self) -> None:
+        self.painter.set_caption("2 of 5 samples captured")
+        self.painter.paint(self.pipeline)
+        self.assertEqual(self.video._caption, "2 of 5 samples captured")
+
+    def test_nothing_is_painted_without_a_pipeline(self) -> None:
+        self.assertFalse(self.painter.paint(None))
+
+    def test_reset_forgets_the_last_frame(self) -> None:
+        self.painter.paint(self.pipeline)
+        self.painter.reset()
+        self.assertTrue(self.painter.paint(self.pipeline))
 
 
 if __name__ == "__main__":

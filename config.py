@@ -17,6 +17,8 @@ from typing import Any
 
 import yaml
 
+from src import execution_providers
+
 DEFAULT_CONFIG_FILENAME = "config.yaml"
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / DEFAULT_CONFIG_FILENAME
 
@@ -205,7 +207,7 @@ class CameraConfig:
 class ModelConfig:
     name: str = "buffalo_s"
     root: str = "models"
-    providers: tuple[str, ...] = ("CPUExecutionProvider",)
+    providers: tuple[str, ...] = ("auto",)
     det_size: tuple[int, int] = (320, 320)
     det_thresh: float = 0.5
     warmup: bool = True
@@ -216,10 +218,18 @@ class ModelConfig:
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> ModelConfig:
         path = "model"
+        providers = _get_str_list(data, "providers", ("auto",), path)
+        for index, name in enumerate(providers):
+            if name not in execution_providers.known_names():
+                raise ConfigError(
+                    f"{path}.providers[{index}] is {name!r}, which is not a known "
+                    f"execution provider. Use one of: "
+                    f"{', '.join(execution_providers.known_names())}."
+                )
         return cls(
             name=_get_str(data, "name", "buffalo_s", path),
             root=_get_str(data, "root", "models", path),
-            providers=_get_str_list(data, "providers", ("CPUExecutionProvider",), path),
+            providers=providers,
             det_size=_get_int_pair(data, "det_size", (320, 320), path, minimum=64),
             det_thresh=_get_float(data, "det_thresh", 0.5, path, minimum=0.01, maximum=0.99),
             warmup=_get_bool(data, "warmup", True, path),

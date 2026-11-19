@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -211,6 +212,61 @@ class LifecycleTests(DatabaseTestCase):
     def test_summary_line_mentions_the_sample_count(self) -> None:
         record = self.database.add_employee("001", "Ana", [sample(1), sample(2)])
         self.assertIn("2 samples", record.summary)
+
+
+class ThreadTests(DatabaseTestCase):
+    """A sqlite3 connection belongs to the thread that made it.
+
+    The app reads and writes from the GUI thread, the enrollment worker, and the
+    inference thread that records attendance, so the database has to hand each
+    thread its own connection instead of sharing one.
+    """
+
+    def _run_in_thread(self, action) -> dict[str, object]:
+        outcome: dict[str, object] = {}
+
+        def target() -> None:
+            try:
+                outcome["value"] = action()
+            except Exception as exc:  # noqa: BLE001 - reported to the assertion below
+                outcome["error"] = f"{type(exc).__name__}: {exc}"
+
+        thread = threading.Thread(target=target)
+        thread.start()
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        return outcome
+
+    def test_a_worker_thread_can_read_the_database(self) -> None:
+        self.database.add_employee("001", "Ana", [sample(1)])
+        self.database.next_employee_id()  # the GUI thread opens its connection first
+
+        outcome = self._run_in_thread(
+            lambda: (self.database.count_employees(), self.database.next_employee_id())
+        )
+
+        self.assertNotIn("error", outcome, outcome.get("error"))
+        self.assertEqual(outcome["value"], (1, "002"))
+
+    def test_a_worker_thread_can_write_the_database(self) -> None:
+        outcome = self._run_in_thread(
+            lambda: self.database.add_employee("002", "Budi", [sample(2)]).full_name
+        )
+
+        self.assertNotIn("error", outcome, outcome.get("error"))
+        self.assertEqual(outcome["value"], "Budi")
+        self.assertEqual(self.database.count_employees(), 1)
+
+    def test_closing_releases_the_connection_of_a_worker_thread(self) -> None:
+        it_worked = self._run_in_thread(self.database.count_employees)
+        self.assertNotIn("error", it_worked, it_worked.get("error"))
+
+        self.database.close()
+
+        with self.assertRaises(DatabaseError):
+            self.database.count_employees()
+        after_close = self._run_in_thread(self.database.count_employees)
+        self.assertIn("error", after_close)
 
 
 class EncryptionTests(unittest.TestCase):

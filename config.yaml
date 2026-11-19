@@ -25,10 +25,17 @@ model:
   name: buffalo_s
   # Model packs are downloaded here on first run (models/<name>/).
   root: models
+  # auto        use the fastest backend the installed onnxruntime build provides
+  #             (DirectML on any Windows GPU, then CUDA, OpenVINO, CPU)
+  # cpu         force the CPU
+  # directml    AMD or Intel GPU on Windows (pip install onnxruntime-directml)
+  # cuda        NVIDIA GPU (pip install onnxruntime-gpu)
+  # openvino    Intel graphics (pip install onnxruntime-openvino)
+  # Measure with `python main.py providers` before you pin one.
   providers:
-    - CPUExecutionProvider
+    - auto
   # Detection input size. 320 is the sweet spot for a 4-core CPU; 480 helps small
-  # or distant faces at a large frame-time cost.
+  # or distant faces at a large frame-time cost. A GPU absorbs 480 far better.
   det_size: [320, 320]
   det_thresh: 0.5
   warmup: true

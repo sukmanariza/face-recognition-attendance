@@ -31,12 +31,10 @@ class Palette:
 
     background: tuple[int, int, int]
     text: tuple[int, int, int]
-    muted: tuple[int, int, int]
     matched: tuple[int, int, int]
     verifying: tuple[int, int, int]
     unknown: tuple[int, int, int]
     accent: tuple[int, int, int]
-    danger: tuple[int, int, int]
     panel: tuple[int, int, int]
 
 
@@ -44,24 +42,20 @@ class Palette:
 _DARK = Palette(
     background=(20, 20, 20),
     text=(230, 234, 237),
-    muted=(160, 154, 147),
     matched=(122, 179, 95),
     verifying=(74, 180, 224),
     unknown=(92, 112, 232),
     accent=(24, 122, 196),
-    danger=(92, 112, 232),
     panel=(34, 36, 38),
 )
 
 _LIGHT = Palette(
     background=(243, 242, 245),
     text=(40, 40, 40),
-    muted=(110, 110, 110),
     matched=(61, 102, 38),
     verifying=(9, 86, 127),
     unknown=(34, 47, 143),
     accent=(12, 82, 138),
-    danger=(34, 47, 143),
     panel=(230, 228, 228),
 )
 

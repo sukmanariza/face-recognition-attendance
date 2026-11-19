@@ -15,6 +15,10 @@ Design notes:
   the same person and the same day is impossible even if two callers race.
 * Identities are deactivated rather than deleted by default: the person stops being
   recognised, while their attendance history stays intact.
+* One SQLite connection is opened per thread. A ``sqlite3.Connection`` may only be
+  used by the thread that created it, and this database is touched from the GUI
+  thread, the enrollment worker, and the inference thread that records attendance.
+  WAL mode plus the busy timeout let those connections share one file.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -228,7 +233,13 @@ class AttendanceMark:
 
 
 class FaceDatabase:
-    """Thin, strictly validated layer over one SQLite file."""
+    """Thin, strictly validated layer over one SQLite file.
+
+    Connections are per thread: SQLite refuses to let a connection leave the thread
+    that created it, and the enrollment worker and the inference thread both read
+    and write here. Every connection points at the same file and shares the WAL, so
+    the busy timeout settles the write lock instead of raising.
+    """
 
     def __init__(
         self,
@@ -242,39 +253,68 @@ class FaceDatabase:
         self._embedding_dimension: int | None = None
         self._model_signature: str | None = None
         self._cipher = cipher
+        self._busy_timeout_s = busy_timeout_ms / 1000.0
+        self._lock = threading.Lock()
+        self._connections: list[sqlite3.Connection] = []
+        self._local = threading.local()
+        self._closed = False
 
         try:
-            connection = sqlite3.connect(str(self._path), timeout=busy_timeout_ms / 1000.0)
+            connection = self._open_connection()
         except sqlite3.Error as exc:  # pragma: no cover - depends on the filesystem
             raise DatabaseError(f"Could not open database {self._path}: {exc}") from exc
-
-        connection.row_factory = sqlite3.Row
-        self._connection_handle: sqlite3.Connection | None = connection
-        try:
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute("PRAGMA journal_mode = WAL")
-            _restrict_permissions(self._path, 0o600)
-        except sqlite3.Error as exc:
-            connection.close()
-            self._connection_handle = None
-            raise DatabaseError(f"Could not prepare database {self._path}: {exc}") from exc
+        self._local.connection = connection
         try:
             self._ensure_schema()
         except Exception:
             # A wrong key or a corrupt file must not leave the handle open: on
             # Windows an open handle also keeps the file locked for the next attempt.
-            connection.close()
-            self._connection_handle = None
+            self.close()
             raise
+
+    def _open_connection(self) -> sqlite3.Connection:
+        """A fresh connection for the calling thread.
+
+        ``check_same_thread=False`` only lifts the ownership check so that
+        :meth:`close` can shut down connections owned by threads that already
+        finished; each connection is still used by one thread at a time.
+        """
+        connection = sqlite3.connect(
+            str(self._path), timeout=self._busy_timeout_s, check_same_thread=False
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA journal_mode = WAL")
+            _restrict_permissions(self._path, 0o600)
+        except sqlite3.Error:
+            connection.close()
+            raise
+        with self._lock:
+            if self._closed:
+                connection.close()
+                raise DatabaseError(
+                    f"Database {self._path} is closed. Create a new FaceDatabase to use it again."
+                )
+            self._connections.append(connection)
+        return connection
 
     @property
     def _connection(self) -> sqlite3.Connection:
-        """The live connection; fails clearly once the database is closed."""
-        if self._connection_handle is None:
+        """This thread's connection, opened on first use."""
+        if self._closed:
             raise DatabaseError(
                 f"Database {self._path} is closed. Create a new FaceDatabase to use it again."
             )
-        return self._connection_handle
+        connection = getattr(self._local, "connection", None)
+        if connection is not None:
+            return connection
+        try:
+            connection = self._open_connection()
+        except sqlite3.Error as exc:
+            raise DatabaseError(f"Could not open database {self._path}: {exc}") from exc
+        self._local.connection = connection
+        return connection
 
     def __enter__(self) -> FaceDatabase:
         return self
@@ -283,9 +323,14 @@ class FaceDatabase:
         self.close()
 
     def close(self) -> None:
-        if self._connection_handle is not None:
-            self._connection_handle.close()
-            self._connection_handle = None
+        """Close every connection, including the ones opened by other threads."""
+        with self._lock:
+            connections, self._connections = self._connections, []
+            self._closed = True
+        for connection in connections:
+            connection.close()
+        self._local = threading.local()
+        self._local = threading.local()
 
     @property
     def path(self) -> Path:

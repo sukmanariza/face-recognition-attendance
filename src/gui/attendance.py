@@ -7,8 +7,8 @@ from datetime import date
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QBoxLayout,
     QDateEdit,
-    QHBoxLayout,
     QLabel,
     QMessageBox,
     QTableWidget,
@@ -23,6 +23,9 @@ from . import widgets
 from .context import AppContext
 
 COLUMNS = ("ID", "Name", "First seen", "Last seen", "Status", "Sightings")
+
+# Below this width the toolbar goes on two rows instead of one.
+_STACK_BELOW_WIDTH = 640
 
 
 class AttendancePage(QWidget):
@@ -48,8 +51,9 @@ class AttendancePage(QWidget):
             )
         )
 
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
+        self._toolbar = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self._toolbar.setSpacing(10)
+        toolbar = self._toolbar
         toolbar.addWidget(QLabel("Date"))
         self._date = QDateEdit()
         self._date.setCalendarPopup(True)
@@ -67,10 +71,12 @@ class AttendancePage(QWidget):
         toolbar.addWidget(refresh_button)
         toolbar.addStretch(1)
 
-        self._export_button = widgets.secondary_button("Export this month")
+        self._export_button = widgets.secondary_button("Export month")
+        self._export_button.setToolTip("Write the selected month as a CSV file")
         self._export_button.clicked.connect(self.export_month)
         toolbar.addWidget(self._export_button)
-        self._delete_button = widgets.danger_button("Delete selected")
+        self._delete_button = widgets.danger_button("Delete row")
+        self._delete_button.setToolTip("Remove the selected attendance row")
         self._delete_button.setEnabled(False)
         self._delete_button.clicked.connect(self.delete_selected)
         toolbar.addWidget(self._delete_button)
@@ -87,11 +93,11 @@ class AttendancePage(QWidget):
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
         self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.setColumnWidth(0, 90)
-        self._table.setColumnWidth(1, 240)
-        self._table.setColumnWidth(2, 110)
-        self._table.setColumnWidth(3, 110)
-        self._table.setColumnWidth(4, 90)
+        self._table.setColumnWidth(0, 80)
+        self._table.setColumnWidth(1, 200)
+        self._table.setColumnWidth(2, 90)
+        self._table.setColumnWidth(3, 90)
+        self._table.setColumnWidth(4, 80)
         self._table.itemSelectionChanged.connect(self._sync_buttons)
         root.addWidget(self._table, 1)
 
@@ -103,6 +109,20 @@ class AttendancePage(QWidget):
         root.addWidget(self._banner)
 
         self._sync_buttons()
+        self._apply_layout()
+
+    def _apply_layout(self) -> None:
+        """Put the toolbar on two rows when the window is narrow."""
+        narrow = self.width() < _STACK_BELOW_WIDTH
+        direction = (
+            QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
+        )
+        if self._toolbar.direction() != direction:
+            self._toolbar.setDirection(direction)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_layout()
 
     def _go_today(self) -> None:
         self._date.setDate(QDate.currentDate())

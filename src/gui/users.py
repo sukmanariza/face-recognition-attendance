@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QHBoxLayout,
+    QBoxLayout,
     QInputDialog,
     QLabel,
     QMessageBox,
@@ -19,6 +19,9 @@ from src.database import DatabaseError, EmployeeNotFoundError
 
 from . import widgets
 from .context import AppContext
+
+# Below this width the action buttons stack instead of sitting on one row.
+_STACK_BELOW_WIDTH = 580
 
 
 class UsersPage(QWidget):
@@ -61,15 +64,18 @@ class UsersPage(QWidget):
         self._table.itemSelectionChanged.connect(self._sync_buttons)
         root.addWidget(self._table, 1)
 
-        buttons = QHBoxLayout()
+        self._actions = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        buttons = self._actions
         buttons.setSpacing(10)
         self._refresh_button = widgets.secondary_button("Refresh")
         self._refresh_button.clicked.connect(self.refresh)
         self._rename_button = widgets.secondary_button("Rename")
         self._rename_button.clicked.connect(self.rename_selected)
-        self._record_button = widgets.secondary_button("Re-record face")
+        self._record_button = widgets.secondary_button("Re-record")
+        self._record_button.setToolTip("Record this person's face again and replace the samples")
         self._record_button.clicked.connect(self.record_selected)
         self._state_button = widgets.secondary_button("Deactivate")
+        self._state_button.setToolTip("Stop matching this person but keep their history")
         self._state_button.clicked.connect(self.toggle_active)
         self._delete_button = widgets.danger_button("Delete")
         self._delete_button.clicked.connect(self.delete_selected)
@@ -91,6 +97,20 @@ class UsersPage(QWidget):
         root.addWidget(self._count)
 
         self._sync_buttons()
+        self._apply_layout()
+
+    def _apply_layout(self) -> None:
+        """Put the action buttons on two rows when the window is narrow."""
+        narrow = self.width() < _STACK_BELOW_WIDTH
+        direction = (
+            QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
+        )
+        if self._actions.direction() != direction:
+            self._actions.setDirection(direction)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_layout()
 
     def refresh(self) -> None:
         try:

@@ -217,7 +217,6 @@ class PipelineOutput:
     recognition: FrameRecognition | None = None
     attempt: SampleAttempt | None = None
     inference_ms: float = 0.0
-    processed_at: float = 0.0
 
 
 class InferenceThread(threading.Thread):
@@ -239,7 +238,10 @@ class InferenceThread(threading.Thread):
         self._recognition: FrameProcessor | None = None
         self._registration: RegistrationProcessor | None = None
         self._rate = RateCounter()
-        self._last_version = 0
+        # The handoff slot counts publishes; the camera counts frames and skips
+        # numbers when a frame arrives while nobody is reading. Waiting must use the
+        # slot counter, or a skipped sequence parks this thread far behind.
+        self._last_sequence = 0
         self._dropped = 0
         self._error: str | None = None
 
@@ -275,16 +277,17 @@ class InferenceThread(threading.Thread):
 
     def run(self) -> None:
         while not self._stop_event.is_set():
-            value = self._source.wait_newer(self._last_version, timeout=0.1)
+            version = self._source.version
+            value = self._source.wait_newer(version, timeout=0.1)
             if value is None:
                 continue
             frame = value if isinstance(value, Frame) else None
             if frame is None:
                 continue
 
-            if frame.sequence > self._last_version + 1:
-                self._dropped += frame.sequence - self._last_version - 1
-            self._last_version = frame.sequence
+            if frame.sequence > self._last_sequence + 1:
+                self._dropped += frame.sequence - self._last_sequence - 1
+            self._last_sequence = frame.sequence
 
             mode = self.mode
             started = time.perf_counter()
@@ -305,7 +308,6 @@ class InferenceThread(threading.Thread):
                 mode=mode,
                 recognition=result,
                 inference_ms=(time.perf_counter() - started) * 1000.0,
-                processed_at=time.monotonic(),
             )
 
         if mode is Mode.REGISTER and self._registration is not None:
@@ -315,14 +317,12 @@ class InferenceThread(threading.Thread):
                 mode=mode,
                 attempt=attempt,
                 inference_ms=(time.perf_counter() - started) * 1000.0,
-                processed_at=time.monotonic(),
             )
 
         return PipelineOutput(
             frame=frame,
             mode=mode,
             inference_ms=(time.perf_counter() - started) * 1000.0,
-            processed_at=time.monotonic(),
         )
 
 

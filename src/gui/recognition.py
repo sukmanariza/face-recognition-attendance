@@ -2,14 +2,17 @@
 
 Shows the newest frame, the best match for each face as a percentage, and what the
 pipeline costs while it runs. Similarity is displayed as a percentage because it is
-easier to read at a glance; the README is explicit that it measures distance in
+easier to read at a glance; the documentation is explicit that it measures distance in
 embedding space and is not a probability of being the same person.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal
+import time
+
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QBoxLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -24,6 +27,16 @@ from src.presentation import PresentationVerdict, SpoofLevel
 
 from . import widgets
 from .context import AppContext
+from .preview import PreviewPainter
+
+# Below this width the video and the readout stack instead of sitting side by side.
+_STACK_BELOW_WIDTH = 900
+_SIDE_PANEL_MAX = 470
+_STACKED_VIDEO_HEIGHT = 240
+_UNLIMITED = 16_777_215
+# The camera can deliver 30 frames per second; counters that change that often read
+# as flicker, so the statistics row refreshes at most this often.
+_STATS_REFRESH_SECONDS = 0.25
 
 
 class RecognitionPage(QWidget):
@@ -38,10 +51,16 @@ class RecognitionPage(QWidget):
         self._pump: DisplayPump | None = None
         self._worker: widgets.Worker | None = None
         self._last_face_key: tuple[str, str] | None = None
+        self._tone_keys: dict[str, tuple[str, str]] = {}
+        self._similarity_key: str | None = None
+        self._readout_is_idle = False
+        self._stats_updated_at = 0.0
+        self._video = widgets.VideoView("Press Start to open the camera")
+        self._preview = PreviewPainter(self._video)
 
         self._timer = QTimer(self)
-        # 8 ms is a poll, not a cap: the page paints only when a new result exists,
-        # so the display follows the camera instead of being limited to 30 FPS.
+        # 8 ms is a poll, not a cap: the page paints every captured frame, so the
+        # display follows the camera instead of being limited to 30 FPS.
         self._timer.setInterval(8)
         self._timer.timeout.connect(self._tick)
 
@@ -52,7 +71,7 @@ class RecognitionPage(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 22, 24, 22)
-        root.setSpacing(16)
+        root.setSpacing(12)
 
         self._header = widgets.PageHeader(
             "Face recognition",
@@ -61,25 +80,59 @@ class RecognitionPage(QWidget):
         )
         root.addWidget(self._header)
 
-        body = QHBoxLayout()
-        body.setSpacing(16)
+        self._body = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self._body.setSpacing(16)
 
-        self._video = widgets.VideoView("Press Start to open the camera")
-        body.addWidget(self._video, 3)
+        self._video.setMinimumSize(QSize(280, 170))
+        self._body.addWidget(self._video, 3)
 
         panel = QVBoxLayout()
         panel.setSpacing(12)
+        panel.setContentsMargins(0, 0, 0, 0)
         panel.addWidget(self._build_match_card())
         panel.addWidget(self._build_stats_card())
         panel.addStretch(1)
         panel_holder = QWidget()
         panel_holder.setLayout(panel)
-        panel_holder.setMinimumWidth(320)
-        body.addWidget(panel_holder, 2)
+        panel_holder.setMinimumWidth(300)
 
-        root.addLayout(body, 1)
+        self._panel = widgets.scroll_area(panel_holder, min_width=300, max_width=470)
+        self._body.addWidget(self._panel, 2)
+
+        root.addLayout(self._body, 1)
         self._banner = widgets.Banner()
         root.addWidget(self._banner)
+        # Match the state the first frame would produce, so the empty detail lines
+        # do not occupy space (and leave a gap) before the camera is started.
+        self._reset_readout()
+        self._apply_layout()
+
+    def _apply_layout(self) -> None:
+        """Stack the video above the readout when the window is too narrow."""
+        narrow = self.width() < _STACK_BELOW_WIDTH
+        direction = (
+            QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
+        )
+        if self._body.direction() != direction:
+            self._body.setDirection(direction)
+        if narrow:
+            self._body.setStretch(0, 0)
+            self._body.setStretch(1, 1)
+            self._video.setMaximumHeight(_STACKED_VIDEO_HEIGHT)
+            self._panel.setMaximumWidth(_SIDE_PANEL_MAX)
+            self._panel.setMinimumHeight(0)
+            self._panel.setMaximumHeight(_UNLIMITED)
+        else:
+            self._body.setStretch(0, 3)
+            self._body.setStretch(1, 2)
+            self._video.setMaximumHeight(_UNLIMITED)
+            self._panel.setMaximumWidth(470)
+            self._panel.setMinimumHeight(0)
+            self._panel.setMaximumHeight(_UNLIMITED)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_layout()
 
     def _build_match_card(self) -> QWidget:
         card = widgets.Card()
@@ -263,6 +316,7 @@ class RecognitionPage(QWidget):
             self._pipeline = None
         self._pump = None
         self._video.clear_frame("Press Start to open the camera")
+        self._preview.reset()
         self._start_button.setEnabled(True)
         self._stop_button.setEnabled(False)
         self._reset_readout()
@@ -276,18 +330,19 @@ class RecognitionPage(QWidget):
     def _tick(self) -> None:
         if self._pump is None or self._pipeline is None:
             return
+        # Paint the newest camera frame first: the preview must follow the camera,
+        # not the inference thread, or every detection shows up as a hitch.
+        self._preview.paint(self._pipeline)
+
         output = self._pump.poll()
         if output is None:
             return
-        self._pipeline.note_displayed()
 
         recognition = output.recognition
         if recognition is None:
-            self._video.set_frame(output.frame.image)
             return
 
-        caption = self._caption_for(recognition)
-        self._video.set_frame(output.frame.image, caption=caption)
+        self._preview.set_caption(self._caption_for(recognition))
         self._update_match(recognition)
         self._update_stats(recognition)
 
@@ -301,6 +356,7 @@ class RecognitionPage(QWidget):
         if not recognition.faces:
             self._reset_readout()
             return
+        self._readout_is_idle = False
 
         shown = recognition.matched or recognition.faces
         face = shown[0]
@@ -311,23 +367,18 @@ class RecognitionPage(QWidget):
             self._last_face_key = key
 
         if face.state is FaceState.MATCHED:
-            self._state_badge.setText("matched")
-            self._state_badge.setObjectName("BadgeAccent")
+            self._set_badge("matched", "BadgeAccent")
         elif face.state is FaceState.VERIFYING:
-            self._state_badge.setText("confirming")
-            self._state_badge.setObjectName("Badge")
+            self._set_badge("confirming", "Badge")
         else:
-            self._state_badge.setText("no match")
-            self._state_badge.setObjectName("Badge")
-        self._state_badge.style().unpolish(self._state_badge)
-        self._state_badge.style().polish(self._state_badge)
+            self._set_badge("no match", "Badge")
 
         percentage = face.percentage
         self._similarity.setValue(percentage)
         if self._context.config.ui.show_similarity:
-            self._similarity_text.setText(f"Similarity {percentage}%  ({face.similarity:.3f})")
+            self._set_similarity_text(f"Similarity {percentage}%  ({face.similarity:.3f})")
         else:
-            self._similarity_text.setText("Similarity hidden in Settings")
+            self._set_similarity_text("Similarity hidden in Settings")
         self._show_presentation(face.presentation, multiple=recognition.face_count > 1)
         self._show_attendance(face.attendance)
         self._reason.setText(face.reason)
@@ -355,10 +406,7 @@ class RecognitionPage(QWidget):
         self._set_presentation(verdict.label, tone, verdict.detail)
 
     def _set_presentation(self, text: str, tone: str, detail: str) -> None:
-        self._presentation.setText(text)
-        self._presentation.setObjectName(tone)
-        self._presentation.style().unpolish(self._presentation)
-        self._presentation.style().polish(self._presentation)
+        self._restyle("presentation", self._presentation, text, tone)
         self._presentation_detail.setText(detail)
         self._presentation_detail.setVisible(bool(detail))
 
@@ -380,19 +428,46 @@ class RecognitionPage(QWidget):
         )
 
     def _set_attendance(self, text: str, tone: str, detail: str) -> None:
-        self._attendance.setText(text)
-        self._attendance.setObjectName(tone)
-        self._attendance.style().unpolish(self._attendance)
-        self._attendance.style().polish(self._attendance)
+        self._restyle("attendance", self._attendance, text, tone)
         self._attendance.setToolTip(detail)
 
+    def _set_badge(self, text: str, tone: str) -> None:
+        self._restyle("badge", self._state_badge, text, tone)
+
+    def _restyle(self, name: str, label: QLabel, text: str, tone: str) -> None:
+        """Set text and tone on a label, restyling only when one of them changed.
+
+        The camera pages call this many times per second, and an unpolish/polish pair
+        per call is enough work to be visible as flicker.
+        """
+        key = (text, tone)
+        if self._tone_keys.get(name) == key:
+            return
+        self._tone_keys[name] = key
+        label.setText(text)
+        if label.objectName() != tone:
+            label.setObjectName(tone)
+            label.style().unpolish(label)
+            label.style().polish(label)
+
+    def _set_similarity_text(self, text: str) -> None:
+        if text == self._similarity_key:
+            return
+        self._similarity_key = text
+        self._similarity_text.setText(text)
+
     def _reset_readout(self) -> None:
+        if self._readout_is_idle:
+            return
+        self._readout_is_idle = True
         self._last_face_key = None
+        self._tone_keys.clear()
+        self._similarity_key = None
         self._name.setText("No face")
         self._identity.setText("waiting for a face")
-        self._state_badge.setText("idle")
         self._similarity.setValue(0)
         self._similarity_text.setText("Similarity not measured yet")
+        self._set_badge("idle", "Badge")
         self._set_presentation("Not checked", "ToneMuted", "")
         self._set_attendance("not recorded", "ToneMuted", "")
         self._reason.setText("")
@@ -404,6 +479,10 @@ class RecognitionPage(QWidget):
         pipeline = self._pipeline
         if pipeline is None:
             return
+        now = time.monotonic()
+        if now - self._stats_updated_at < _STATS_REFRESH_SECONDS:
+            return
+        self._stats_updated_at = now
         stats = pipeline.stats()
         self._stats_labels["Capture"].setText(f"{stats.capture_fps:.1f} FPS")
         self._stats_labels["Inference"].setText(f"{stats.inference_fps:.1f} FPS")

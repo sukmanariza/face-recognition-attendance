@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSpinBox,
@@ -142,6 +143,37 @@ class Badge(QLabel):
         super().__init__(text, parent)
         self.setObjectName("BadgeAccent" if accent else "Badge")
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(max(20, self.fontMetrics().height() + 8))
+
+
+def scroll_area(
+    inner: QWidget,
+    *,
+    min_width: int = 0,
+    max_width: int | None = None,
+    horizontal: bool = False,
+) -> QScrollArea:
+    """Wrap a panel so its content stays reachable when the window is short.
+
+    A page whose minimum height is larger than the screen gets its children squeezed
+    until labels and buttons are clipped, which is exactly what a scroll area avoids:
+    the panel keeps its natural height and the scrollbar appears instead.
+    """
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setWidget(inner)
+    area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    area.setHorizontalScrollBarPolicy(
+        Qt.ScrollBarPolicy.ScrollBarAsNeeded if horizontal else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    area.viewport().setAutoFillBackground(False)
+    inner.setAutoFillBackground(False)
+    if min_width:
+        area.setMinimumWidth(min_width)
+    if max_width is not None:
+        area.setMaximumWidth(max_width)
+    return area
 
 
 class Banner(QLabel):
@@ -165,7 +197,12 @@ class Banner(QLabel):
         self.setVisible(False)
 
     def show_message(self, text: str, level: str = "info") -> None:
-        self.setObjectName(self.LEVELS.get(level, "BannerInfo"))
+        name = self.LEVELS.get(level, "BannerInfo")
+        # The camera pages call this on every result, so the repolish below would
+        # otherwise run many times per second for the same message.
+        if text == self.text() and name == self.objectName() and self.isVisible():
+            return
+        self.setObjectName(name)
         self.style().unpolish(self)
         self.style().polish(self)
         self.setText(text)
@@ -421,13 +458,16 @@ def danger_button(text: str, parent: QWidget | None = None) -> QPushButton:
 
 
 def _fit_text(button: QPushButton, text: str) -> None:
-    """Reserve enough width for the label.
+    """Reserve enough room for the label.
 
-    With a stylesheet applied, a QPushButton can report a width hint smaller than
-    its text plus padding, and the label then gets clipped in a tight layout.
+    With a stylesheet applied, a QPushButton reports a hint smaller than its text
+    plus padding, and a tight layout then clips the label. The height matters as
+    much as the width: without a minimum, a squeezed layout renders the button as a
+    coloured bar with no text at all.
     """
     metrics = button.fontMetrics()
     button.setMinimumWidth(metrics.horizontalAdvance(text) + 40)
+    button.setMinimumHeight(max(30, metrics.height() + 16))
 
 
 class SectionTitle(QLabel):

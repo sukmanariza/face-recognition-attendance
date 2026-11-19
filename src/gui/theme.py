@@ -172,6 +172,35 @@ QLabel#TileValue {
 QLabel#TileLabel {
     color: $text_muted;
 }
+/* Scroll areas are page furniture, not surfaces: keep them invisible so a panel
+   does not look like a second card. */
+QScrollArea {
+    background: transparent;
+    border: none;
+}
+QScrollArea > QWidget > QWidget {
+    background: transparent;
+}
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 2px;
+}
+QScrollBar::handle:vertical {
+    background: $border_strong;
+    border-radius: 5px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover {
+    background: $text_muted;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+
 QLabel#MonoValue {
     font-family: "$mono";
     color: $text;

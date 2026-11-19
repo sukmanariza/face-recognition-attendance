@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from typing import cast
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -41,6 +41,46 @@ PAGES = (
 )
 APP_VERSION = "1.0"
 
+# Requested size, and the smallest size the pages can still render without clipping.
+_PREFERRED_WIDTH = 1180
+_PREFERRED_HEIGHT = 780
+_MINIMUM_WIDTH = 820
+_MINIMUM_HEIGHT = 520
+_SCREEN_MARGIN_WIDTH = 80
+_SCREEN_MARGIN_HEIGHT = 120
+_SIDEBAR_WIDTH = 196
+
+
+def _available_geometry() -> QRect | None:
+    screen = QApplication.primaryScreen()
+    return screen.availableGeometry() if screen is not None else None
+
+
+def _initial_size(widget: QWidget | None = None) -> tuple[int, int]:
+    """Preferred size, shrunk to the screen this window opens on."""
+    available = _available_geometry()
+    if available is None:  # pragma: no cover - headless platform
+        return _PREFERRED_WIDTH, _PREFERRED_HEIGHT
+    width = min(_PREFERRED_WIDTH, available.width() - _SCREEN_MARGIN_WIDTH)
+    height = min(_PREFERRED_HEIGHT, available.height() - _SCREEN_MARGIN_HEIGHT)
+    return max(640, width), max(480, height)
+
+
+def _minimum_size() -> tuple[int, int]:
+    """Smallest usable window, never larger than what the screen can show.
+
+    The initial size is the upper bound as well: on a small screen both values
+    land on the same numbers, which keeps the window from opening smaller than
+    its own minimum and being snapped back up by the window manager.
+    """
+    available = _available_geometry()
+    if available is None:  # pragma: no cover - headless platform
+        return _MINIMUM_WIDTH, _MINIMUM_HEIGHT
+    initial_width, initial_height = _initial_size()
+    width = min(_MINIMUM_WIDTH, available.width() - 40, initial_width)
+    height = min(_MINIMUM_HEIGHT, available.height() - 60, initial_height)
+    return max(480, width), max(360, height)
+
 
 class MainWindow(QWidget):
     """Application shell."""
@@ -54,14 +94,30 @@ class MainWindow(QWidget):
         config = self._context.config
         self.setObjectName("Root")
         self.setWindowTitle(config.ui.window_title)
-        self.resize(1180, 760)
-        self.setMinimumSize(940, 620)
+
+        # Fit the window to the screen it opens on: a fixed 1180x760 does not fit a
+        # 1366x768 laptop once the taskbar and the window frame are counted, and Qt
+        # then squeezes children until labels are clipped.
+        width, height = _initial_size(self)
+        self.resize(width, height)
+        minimum_width, minimum_height = _minimum_size()
+        self.setMinimumSize(minimum_width, minimum_height)
 
         # Applied before the pages exist: the stylesheet changes font sizes, and a
         # widget laid out with the old metrics keeps a clipped, too-small rect.
         self._apply_theme()
         self._build_ui()
+        self._centre_on_screen()
         self.navigate("home")
+
+    def _centre_on_screen(self) -> None:
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:  # pragma: no cover - a headless platform without screens
+            return
+        available = screen.availableGeometry()
+        frame = self.frameGeometry()
+        frame.moveCenter(available.center())
+        self.move(frame.topLeft())
 
     def _build_ui(self) -> None:
         root = QHBoxLayout(self)
@@ -96,7 +152,7 @@ class MainWindow(QWidget):
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(208)
+        sidebar.setFixedWidth(_SIDEBAR_WIDTH)
 
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(14, 18, 14, 16)

@@ -11,6 +11,9 @@ from src.similarity import to_percentage
 from . import widgets
 from .context import AppContext
 
+# Tile columns: four across on a wide window, then two, then one.
+_TILE_BREAKPOINTS = ((1240, 4), (620, 2), (0, 1))
+
 
 class HomePage(QWidget):
     """Landing page with live counters and shortcuts."""
@@ -21,11 +24,11 @@ class HomePage(QWidget):
         super().__init__(parent)
         self._context = context
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 22, 24, 22)
-        layout.setSpacing(16)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 22, 24, 22)
+        root.setSpacing(12)
 
-        layout.addWidget(
+        root.addWidget(
             widgets.PageHeader(
                 "Overview",
                 "Everything runs on this machine: no network calls, no cloud service, "
@@ -33,25 +36,48 @@ class HomePage(QWidget):
             )
         )
 
-        tiles = QHBoxLayout()
-        tiles.setSpacing(12)
         self._identities = widgets.StatTile("Registered identities", "0")
         self._present = widgets.StatTile("Present today", "0")
         self._camera = widgets.StatTile("Camera", "n/a")
         self._performance = widgets.StatTile("Performance", context.tier.title())
-        tiles.addWidget(self._identities)
-        tiles.addWidget(self._present)
-        tiles.addWidget(self._camera)
-        tiles.addWidget(self._performance)
-        layout.addLayout(tiles)
+        self._tiles = (self._identities, self._present, self._camera, self._performance)
 
-        layout.addWidget(self._build_actions())
-        layout.addWidget(self._build_environment())
-        layout.addStretch(1)
+        self._tile_grid = QGridLayout()
+        self._tile_grid.setSpacing(12)
+        self._tile_grid.setContentsMargins(0, 0, 0, 0)
 
+        content = QVBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(12)
+        content.addLayout(self._tile_grid)
+        content.addWidget(self._build_actions())
+        content.addWidget(self._build_environment())
+        content.addStretch(1)
+
+        holder = QWidget()
+        holder.setLayout(content)
+        root.addWidget(widgets.scroll_area(holder), 1)
+
+        self._layout_tiles()
         context.gallery_changed.connect(self.refresh)
         context.config_changed.connect(self.refresh)
         self.refresh()
+
+    def _layout_tiles(self) -> None:
+        """Place the tiles in as many columns as the width allows."""
+        columns = 1
+        for width, count in _TILE_BREAKPOINTS:
+            if self.width() >= width:
+                columns = count
+                break
+        for index, tile in enumerate(self._tiles):
+            self._tile_grid.addWidget(tile, index // columns, index % columns)
+        for column in range(4):
+            self._tile_grid.setColumnStretch(column, 1 if column < columns else 0)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._layout_tiles()
 
     def _build_actions(self) -> QWidget:
         card = widgets.Card()
@@ -96,6 +122,7 @@ class HomePage(QWidget):
         rows = (
             "Hardware",
             "Performance profile",
+            "Compute",
             "Recognition threshold",
             "Storage",
             "Database",
@@ -159,6 +186,9 @@ class HomePage(QWidget):
         self._environment_labels["Hardware"].setText(self._context.hardware_summary())
         self._environment_labels["Performance profile"].setText(
             f"{self._context.tier} (from performance.profile = {config.performance.profile})"
+        )
+        self._environment_labels["Compute"].setText(
+            self._context.application.describe_compute()
         )
         self._environment_labels["Recognition threshold"].setText(
             f"{to_percentage(config.recognition.similarity_threshold)}% similarity"
