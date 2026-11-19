@@ -1,4 +1,4 @@
-<img width="1461" height="988" alt="image" src="https://github.com/user-attachments/assets/001b2f80-ef5d-4e82-aec1-2477f903dcfc" /># Face ID: local face recognition and attendance
+# Face ID: local face recognition and attendance
 
 > **Learning project.** Built to study how face recognition works. It is not a product,
 > and it is not certified for security, payroll, or disciplinary decisions.
