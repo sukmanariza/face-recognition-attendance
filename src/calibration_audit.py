@@ -45,12 +45,16 @@ class SeparationMeasurement:
 
     def describe(self) -> str:
         lines = [
-            f"same person      n={len(self.genuine):3d}  "
-            f"min {min(self.genuine):.3f}  median {self.genuine_median:.3f}  "
-            f"max {max(self.genuine):.3f}",
-            f"different people n={len(self.impostor):3d}  "
-            f"min {min(self.impostor):.3f}  median {self.impostor_median:.3f}  "
-            f"max {max(self.impostor):.3f}",
+            (
+                f"same person      n={len(self.genuine):3d}  "
+                f"min {min(self.genuine):.3f}  median {self.genuine_median:.3f}  "
+                f"max {max(self.genuine):.3f}"
+            ),
+            (
+                f"different people n={len(self.impostor):3d}  "
+                f"min {min(self.impostor):.3f}  median {self.impostor_median:.3f}  "
+                f"max {max(self.impostor):.3f}"
+            ),
         ]
         if self.overlap:
             lines.append("the two populations overlap; add more samples before trusting a fit")

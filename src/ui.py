@@ -277,8 +277,10 @@ def render_registration(
         image,
         palette,
         [
-            f"Stage {min(attempt.collected + 1, attempt.required)}/{attempt.required}: "
-            f"{attempt.stage_title}",
+            (
+                f"Stage {min(attempt.collected + 1, attempt.required)}/{attempt.required}: "
+                f"{attempt.stage_title}"
+            ),
             attempt.prompt,
             attempt.message,
         ],

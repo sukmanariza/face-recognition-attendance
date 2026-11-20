@@ -59,8 +59,6 @@ COPLANAR_INDICES = (0, 1, 3, 4)
 _MIN_INTEROCULAR_PX = 6.0
 _MAX_OBSERVATIONS = 24
 _MAX_PAIRS = 8
-# Below this the residuals are dominated by landmark jitter, so the ratio is noise.
-_MIN_RESIDUAL_FLOOR = 0.002
 
 
 class SpoofLevel(StrEnum):
@@ -76,14 +74,12 @@ class PlanarEvidence:
     """One frame pair's depth evidence, scaled by the inter-ocular distance.
 
     ``noise_level`` is the residual of the four coplanar landmarks, which measures
-    how much the detector jitters. ``nose_ratio`` is kept for diagnostics only: with
-    four samples it swings between 1 and 3 on noise alone.
+    how much the detector jitters.
     """
 
     nose_residual: float
     noise_level: float
     motion: float
-    nose_ratio: float
 
 
 @dataclass(frozen=True)
@@ -136,7 +132,6 @@ class FaceObservation:
     """Landmarks of one face in one frame."""
 
     points: np.ndarray
-    interocular: float
     timestamp: float
 
 
@@ -179,7 +174,6 @@ def planar_evidence(
         nose_residual=nose,
         noise_level=other_median,
         motion=motion,
-        nose_ratio=nose / max(other_median, _MIN_RESIDUAL_FLOOR),
     )
 
 
@@ -309,7 +303,7 @@ class PresentationGuard:
         scale = interocular_distance(points)
         if scale < _MIN_INTEROCULAR_PX:
             return
-        self._buffer.append(FaceObservation(points.copy(), scale, timestamp))
+        self._buffer.append(FaceObservation(points.copy(), timestamp))
         self._drop_stale(timestamp)
 
     def _drop_stale(self, timestamp: float) -> None:
@@ -342,7 +336,6 @@ class PresentationGuard:
             nose_residual=nose,
             noise_level=noise,
             motion=motion,
-            nose_ratio=nose / max(noise, _MIN_RESIDUAL_FLOOR),
         )
         solid = sum(1 for pair in pairs if self._is_solid(pair))
         planar = sum(1 for pair in pairs if self._is_planar(pair))

@@ -31,6 +31,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Self
 
 import numpy as np
 
@@ -344,7 +345,7 @@ class FaceDatabase:
         self._local.connection = connection
         return connection
 
-    def __enter__(self) -> FaceDatabase:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc_info: object) -> None:

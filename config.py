@@ -9,6 +9,7 @@ used by both sources, so a bad value is rejected naming the exact key.
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import time
@@ -81,7 +82,7 @@ def _get_float(
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{path}.{key} must be a number, got {_describe(value)}.")
     result = float(value)
-    if result != result or result in (float("inf"), float("-inf")):
+    if not math.isfinite(result):
         raise ConfigError(f"{path}.{key} must be a finite number, got {value}.")
     if minimum is not None:
         if exclusive_minimum and result <= minimum:

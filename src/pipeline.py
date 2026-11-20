@@ -17,7 +17,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol, TypeVar
+from typing import Protocol, Self, TypeVar
 
 import numpy as np
 
@@ -411,7 +411,7 @@ class RecognitionPipeline:
                 thread.join(timeout=1.0)
         self._source.close()
 
-    def __enter__(self) -> RecognitionPipeline:
+    def __enter__(self) -> Self:
         self.start()
         return self
 

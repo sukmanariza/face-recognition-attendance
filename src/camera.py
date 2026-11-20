@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from typing import Self
 
 import cv2
 import numpy as np
@@ -113,7 +114,7 @@ class Camera:
         self._consecutive_failures = 0
         self._error: CameraError | None = None
 
-    def __enter__(self) -> Camera:
+    def __enter__(self) -> Self:
         self.open()
         return self
 

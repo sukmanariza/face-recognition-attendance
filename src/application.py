@@ -16,7 +16,7 @@ import logging
 import platform
 import sys
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Self
 
 from config import AppConfig, load_config
 
@@ -260,8 +260,10 @@ class Application:
     def describe_environment(self) -> Sequence[str]:
         """Human-readable summary for the status view and the CLI."""
         lines = [
-            f"Python            {platform.python_version()} ({platform.system()} "
-            f"{platform.release()}, {platform.machine()})",
+            (
+                f"Python            {platform.python_version()} ({platform.system()} "
+                f"{platform.release()}, {platform.machine()})"
+            ),
             f"Executable        {sys.executable}",
             f"Hardware          {self._hardware.summary}",
             f"Performance       {describe_profile(self._tier, self._hardware)}",
@@ -297,7 +299,7 @@ class Application:
         self._gallery_cache = None
         self._liveness = None
 
-    def __enter__(self) -> Application:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc_info: object) -> None:

@@ -17,7 +17,7 @@ from unittest import mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PySide6.QtCore import QDate, QRect
+from PySide6.QtCore import QCoreApplication, QDate, QEvent, QRect
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from config import load_config
@@ -33,6 +33,20 @@ FORBIDDEN_HEX = {
     "#6366f1",  # indigo
     "#d946ef",  # fuchsia
 }
+
+
+def dispose_window(window) -> None:
+    """Shut a window down and destroy its widget tree now.
+
+    Qt deletes widgets from a deferred queue, and these tests never run an event
+    loop, so a closed window keeps all of its children alive indefinitely. Each
+    surviving window is then re-polished whenever the next one applies the
+    application stylesheet, which is why this module slowed down on every test
+    until it looked like a hang. Flushing the queue makes the cost per test flat.
+    """
+    window.shutdown()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def _hex_to_rgb(value: str) -> tuple[int, int, int]:
@@ -152,7 +166,7 @@ class PageTests(unittest.TestCase):
 
         self.application = Application(self.config)
         self.window = MainWindow(self.application)
-        self.addCleanup(self.window.shutdown)
+        self.addCleanup(dispose_window, self.window)
 
     def _texts(self, page: QWidget) -> list[str]:
         return [label.text() for label in page.findChildren(QLabel)]
@@ -361,18 +375,44 @@ class PageTests(unittest.TestCase):
             self.assertTrue(item.text())
 
 
+class WindowDisposalTests(unittest.TestCase):
+    """A disposed window must not stay alive behind the test suite."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        existing = QApplication.instance()
+        cls.app = existing if isinstance(existing, QApplication) else QApplication([])
+        cls._directory = tempfile.TemporaryDirectory()
+        cls.config = load_config().replace(
+            source_path=Path(cls._directory.name) / "config.yaml"
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._directory.cleanup()
+
+    def test_a_disposed_window_releases_its_widgets(self) -> None:
+        from src.application import Application
+        from src.gui import MainWindow
+
+        before = len(QApplication.allWidgets())
+        window = MainWindow(Application(self.config))
+        self.assertGreater(len(QApplication.allWidgets()), before)
+        dispose_window(window)
+        self.assertEqual(len(QApplication.allWidgets()), before)
+
+
 class _FakeSession:
     """Stands in for FaceRegistrationSession: only the calls the page makes."""
 
     def __init__(self) -> None:
         self.resets = 0
-        self.freezes = 0
 
     def reset(self) -> None:
         self.resets += 1
 
     def freeze(self) -> None:
-        self.freezes += 1
+        pass
 
 
 class EnrollmentNameTests(unittest.TestCase):
@@ -397,7 +437,7 @@ class EnrollmentNameTests(unittest.TestCase):
 
         self.application = Application(self.config, use_settings=False)
         self.window = MainWindow(self.application)
-        self.addCleanup(self.window.shutdown)
+        self.addCleanup(dispose_window, self.window)
         self.page = self.window.enrollment_page
         self.window.navigate("enrollment")
         # Pretend the camera is ready, which is what enables the capture button.
@@ -496,8 +536,7 @@ class ReadoutStabilityTests(unittest.TestCase):
         self.application = Application(self.config)
         self.window = MainWindow(self.application)
         self.window.show()
-        self.addCleanup(self.window.hide)
-        self.addCleanup(self.window.shutdown)
+        self.addCleanup(dispose_window, self.window)
 
     def test_a_fixed_lines_label_keeps_its_height(self) -> None:
         from src.gui import widgets
@@ -574,8 +613,7 @@ class FaceOverlayTests(unittest.TestCase):
         self.application = Application(self.config)
         self.window = MainWindow(self.application)
         self.window.show()
-        self.addCleanup(self.window.hide)
-        self.addCleanup(self.window.shutdown)
+        self.addCleanup(dispose_window, self.window)
         self.window.navigate("recognition")
         self.page = self.window.recognition_page
 
@@ -705,8 +743,7 @@ class ResponsiveLayoutTests(unittest.TestCase):
         # Shown on purpose: Qt only runs a layout pass for visible widgets, and
         # these tests are about what the layout does when the window is resized.
         self.window.show()
-        self.addCleanup(self.window.hide)
-        self.addCleanup(self.window.shutdown)
+        self.addCleanup(dispose_window, self.window)
 
     def _available(self) -> QRect:
         screen = self.app.primaryScreen()

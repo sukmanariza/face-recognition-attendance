@@ -153,10 +153,14 @@ def checklist_hints(config: QualityConfig) -> tuple[str, ...]:
     These items are shown for the user to confirm, never as detected facts.
     """
     return (
-        "Remove glasses if you do not always wear them; lens reflections change "
-        "the eye region of the embedding.",
+        (
+            "Remove glasses if you do not always wear them; lens reflections change "
+            "the eye region of the embedding."
+        ),
         "Face a light source such as a desk lamp or a window in front of you.",
-        f"Sit about 40-60 cm from the camera so your face is at least "
-        f"{config.min_face_size_px} px wide.",
+        (
+            f"Sit about 40-60 cm from the camera so your face is at least "
+            f"{config.min_face_size_px} px wide."
+        ),
         "Move hair away from your forehead and cheeks, and do not wear a mask.",
     )

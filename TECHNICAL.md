@@ -520,7 +520,7 @@ The Settings page exposes these; the same keys work in `settings.json`.
 | `recognition.max_faces` | 5 | Faces processed per frame |
 | `recognition.detection_interval` | 2 | Detect on every Nth frame |
 | `recognition.embedding_interval_seconds` | 0.5 | Re-embed a tracked face at most this often |
-| `recognition.track_max_age_seconds` | 2.0 | How long a track survives without a detection |
+| `recognition.track_max_age_seconds` | 1.5 | How long a track survives without a detection |
 | `registration.samples` | 5 | Poses captured per identity (1 to 5) |
 | `registration.capture_interval_seconds` | 0.4 | Minimum time between accepted samples |
 | `registration.min_sample_consistency` | 0.50 | Reject a sample that does not fit the set |
@@ -565,12 +565,14 @@ The Settings page exposes these; the same keys work in `settings.json`.
 | Detection | `det_500m.onnx` | SCRFD face detector (boxes and 5 landmarks) |
 | Recognition | `w600k_mbf.onnx` | ArcFace with a MobileFaceNet backbone, 512-dim |
 
-- Downloaded on first use into `models/buffalo_s/` (about 330 MB, resumable).
+- Downloaded on first use into `models/buffalo_s/` (about 120 MB to download, 160 MB on
+  disk, resumable).
 - Embeddings from different packs are **not** comparable. Changing `model.name` needs a
   new database or re-recording every identity; the app refuses the mismatch instead of
   silently producing wrong matches.
-- `buffalo_l` (det_10g + w600k_r50) is more accurate and much heavier on a CPU. To use
-  it, change `model.name`, delete the database, and register again.
+- `buffalo_l` (det_10g + w600k_r50) is more accurate and much heavier on a CPU (about
+  330 MB to download). To use it, change `model.name`, delete the database, and register
+  again.
 - The weights carry their own licence (InsightFace model zoo terms; the public packs are
   for non-commercial research). Review it before commercial deployment; this repository
   ships code, not weights.
@@ -649,17 +651,25 @@ ignored by git.
 ### 11.1 Checks
 
 ```bash
-python -m unittest discover                                  # 456 tests, no camera or model needed
+python -m unittest discover                                  # 457 tests, no camera or model needed
 uv tool run ruff check . --exclude .venv                     # lint
 uv tool run pyright                                          # types
-uv tool run vulture main.py config.py src tests              # dead code
+uv tool run vulture main.py config.py src tests --min-confidence 80   # dead code
 ```
+
+`vulture` stops at 80% confidence. At 60% it reports fields that are read through
+`dataclasses.asdict`, palette attributes substituted into the stylesheet by name, and
+attributes set on `sqlite3`, `ctypes`, and ONNX Runtime objects. Those are real uses that
+static analysis cannot see, so a lower threshold would only produce noise.
 
 Tests use doubles (`tests/support.py`) for the detector, the camera, and the quality
 assessor, so the suite runs offline in under a minute. The presentation check is tested
 by projecting a five-point face model through a pinhole camera, once flat and once with a
 nose, so the geometry is verified rather than assumed. The GUI tests run on the offscreen
-Qt platform and assert behaviour rather than pixels.
+Qt platform and assert behaviour rather than pixels. Each of them disposes its window
+through `dispose_window()`, which flushes Qt's deferred-delete queue: without that flush a
+closed window keeps its widget tree alive, and the next application stylesheet re-polishes
+every one of them.
 
 ### 11.2 House rules
 

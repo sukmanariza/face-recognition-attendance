@@ -104,14 +104,20 @@ class BenchmarkReport:
             f"Benchmark {self.started_at} ({self.duration_seconds:.0f} s, tier {self.tier})",
             f"  model            {self.model}",
             f"  hardware         {self.hardware}",
-            f"  inference        {data['inference_fps_mean']:.1f} FPS mean, "
-            f"{data['inference_fps_min']:.1f} FPS min",
-            f"  frame time       {data['inference_ms_mean']:.1f} ms mean, "
-            f"{data['inference_ms_p95']:.1f} ms p95",
+            (
+                f"  inference        {data['inference_fps_mean']:.1f} FPS mean, "
+                f"{data['inference_fps_min']:.1f} FPS min"
+            ),
+            (
+                f"  frame time       {data['inference_ms_mean']:.1f} ms mean, "
+                f"{data['inference_ms_p95']:.1f} ms p95"
+            ),
             f"  capture          {data['capture_fps_mean']:.1f} FPS",
             f"  dropped frames   {int(data['dropped_frames'])}",
-            f"  process CPU      {data['process_cpu_percent_mean']:.0f}% "
-            f"(whole machine {max(self._values('machine_cpu_percent')):.0f}% peak)",
+            (
+                f"  process CPU      {data['process_cpu_percent_mean']:.0f}% "
+                f"(whole machine {max(self._values('machine_cpu_percent')):.0f}% peak)"
+            ),
             f"  process RAM      {data['process_ram_mb_mean']:.0f} MB",
             f"  faces per frame  {data['faces_mean']:.2f}",
         ]

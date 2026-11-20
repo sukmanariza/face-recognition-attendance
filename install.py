@@ -124,7 +124,7 @@ def download_model() -> bool:
         print(f"{STEP_SKIP} Model {config.model.name} is already present at {target}")
         return True
 
-    print(f"{STEP_OK} Downloading model {config.model.name} (about 330 MB, resumable)")
+    print(f"{STEP_OK} Downloading model {config.model.name} (about 120 MB, resumable)")
 
     def progress(downloaded: int, total: int) -> None:
         if total <= 0:

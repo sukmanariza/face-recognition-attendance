@@ -64,7 +64,7 @@ python install.py
 
 On Linux or a small board use `python3 install.py`. The script creates its own private
 environment, installs what it needs, prepares the folders, creates the encryption key,
-downloads the face model (about 330 MB, once) and finishes with a self-check. It is safe
+downloads the face model (about 120 MB, once) and finishes with a self-check. It is safe
 to run again: anything already done is skipped.
 
 Prefer to do it by hand?
